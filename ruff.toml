@@ -1,0 +1,10 @@
+line-length = 88
+# tsesh runs under each host's `#!/usr/bin/env python3`; keep syntax at 3.11
+# (tomllib is the floor).
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B", "UP", "SIM", "I", "C4", "PIE", "RUF", "PERF", "PLW1510"]
+
+[format]
+quote-style = "double"

@@ -1,0 +1,23 @@
+# ~/.config/tsesh/config.toml -- every key is optional.
+
+# Directories to scan in find mode (^f), relative to $HOME.
+find_max_depth = 2
+# {path} is replaced with the shell-quoted directory. Default: eza if
+# installed, else ls -la.
+preview_command = "eza --all --git --icons --color=always {path}"
+# Open the picker on live sessions only once you have at least this many.
+# 0 disables.
+live_session_threshold = 5
+# true: query tokens match as literal substrings. Prefix a token with ' for
+# fuzzy. false: classic fzf fuzzy matching.
+fzf_exact = false
+# Path segments that hide a directory and everything under it.
+blacklist = [".cache", ".config", ".local", "Library", "tmp"]
+noisy_basenames = ["node_modules", "target", "dist", "build", ".git"]
+
+# Pinned sessions: always listed, created on first pick.
+[[sessions]]
+name = "notes"
+path = "~/notes"
+startup = "nvim"      # typed into the first pane
+split = "vertical"    # "", "vertical" (side by side) or "horizontal"
