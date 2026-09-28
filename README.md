@@ -17,7 +17,7 @@ and [eza](https://github.com/eza-community/eza) are used when present.
 With [TPM](https://github.com/tmux-plugins/tpm):
 
 ```tmux
-set -g @plugin 'martintrojer/tmux-session-picker'
+set -g @plugin 'mu-crew/tmux-session-picker'
 ```
 
 Without TPM, clone the repo and add to `~/.tmux.conf`:
@@ -36,7 +36,9 @@ run-shell ~/path/to/tmux-session-picker/tsesh.tmux
 | `g` | Last session | `@tsesh_key_last` |
 | `T` | Session rooted at the current pane's directory | `@tsesh_key_root` |
 
-Set an option before TPM runs to move a key, or to `""` to leave it unbound:
+Set an option before TPM runs to move a key, or to `""` to leave it unbound.
+[mu-crew/dotfiles](https://github.com/mu-crew/dotfiles) sets these for you from
+its own `@mu_crew_key_session_*` options, so configure them there if you use it.
 
 ```tmux
 set -g @tsesh_key_pick 'f'
@@ -81,3 +83,7 @@ ruff check . && ruff format --check .
 tsesh started as `tms` in a personal dotfiles repo. It was renamed because
 [tmux-sessionizer](https://github.com/jrmoulton/tmux-sessionizer) already
 installs a `tms` binary.
+
+---
+
+Part of [mu-crew](https://github.com/mu-crew). Written mostly by AI coding agents, with a human reviewing what ships, and built for running them.
