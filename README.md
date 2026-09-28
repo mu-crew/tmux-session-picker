@@ -80,10 +80,6 @@ python3 -m unittest discover -s tests
 ruff check . && ruff format --check .
 ```
 
-tsesh started as `tms` in a personal dotfiles repo. It was renamed because
-[tmux-sessionizer](https://github.com/jrmoulton/tmux-sessionizer) already
-installs a `tms` binary.
-
 ---
 
 Part of [mu-crew](https://github.com/mu-crew). Written mostly by AI coding agents, with a human reviewing what ships, and built for running them.
