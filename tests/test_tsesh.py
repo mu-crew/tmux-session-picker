@@ -313,5 +313,87 @@ class LiveTmux(unittest.TestCase):
         self.assertEqual(tsesh.session_states(), {})
 
 
+class UserManagerCgroup(unittest.TestCase):
+    """Only a server started under a user@ unit moves to its own scope.
+
+    A login shell's session-N.scope outlives logout; user@UID.service does
+    not, so moving an ssh-started server there would kill it at logout.
+    """
+
+    def test_unit_of_user_manager(self):
+        cgroup = (
+            "0::/user.slice/user-1000.slice/user@1000.service"
+            "/app.slice/sway-foot-server.service\n"
+        )
+        self.assertTrue(tsesh.in_user_manager(cgroup))
+
+    def test_login_session_scope(self):
+        cgroup = "0::/user.slice/user-1000.slice/session-3.scope\n"
+        self.assertFalse(tsesh.in_user_manager(cgroup))
+
+    def test_hybrid_host_reads_systemd_hierarchy(self):
+        cgroup = (
+            "12:memory:/user.slice\n"
+            "1:name=systemd:/user.slice/user-1000.slice/session-3.scope\n"
+            "0::/user.slice/user-1000.slice/user@1000.service\n"
+        )
+        self.assertEqual(
+            tsesh.systemd_cgroup(cgroup), "/user.slice/user-1000.slice/session-3.scope"
+        )
+        self.assertFalse(tsesh.in_user_manager(cgroup))
+
+
+def own_cgroup() -> str:
+    try:
+        return tsesh.systemd_cgroup(Path("/proc/self/cgroup").read_text())
+    except OSError:
+        return ""
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@unittest.skipUnless(shutil.which("systemd-run"), "needs systemd-run")
+@unittest.skipUnless("/user@" in own_cgroup(), "needs to run under a user@ unit")
+class ServerScope(unittest.TestCase):
+    """A server tsesh starts must not share its parent unit's cgroup.
+
+    Otherwise stopping the unit tsesh ran under (foot --server) kills it.
+    """
+
+    def setUp(self):
+        self.socket = f"tsesh-scope-{os.getpid()}"
+        saved_path = os.environ.pop("TSESH_TMUX_SOCKET_PATH", None)
+        if saved_path is not None:
+            self.addCleanup(
+                os.environ.__setitem__, "TSESH_TMUX_SOCKET_PATH", saved_path
+            )
+        os.environ["TSESH_TMUX_SOCKET_NAME"] = self.socket
+        self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_NAME", None)
+        self.addCleanup(
+            subprocess.run,
+            ["tmux", "-L", self.socket, "kill-server"],
+            check=False,
+            capture_output=True,
+        )
+
+    def server_cgroup(self) -> str:
+        pid = tsesh.tmux_cmd("display-message", "-p", "#{pid}").stdout.strip()
+        return tsesh.systemd_cgroup(Path(f"/proc/{pid}/cgroup").read_text())
+
+    def test_new_server_gets_its_own_scope(self):
+        tsesh.TmuxBackend().create("first", "/", None)
+        cgroup = self.server_cgroup()
+        self.assertNotEqual(cgroup, own_cgroup())
+        self.assertRegex(cgroup, r"/run-[^/]+\.scope$")
+
+    def test_second_session_joins_running_server(self):
+        tsesh.TmuxBackend().create("first", "/", None)
+        tsesh.TmuxBackend().create("second", "/", None)
+        self.assertEqual(tsesh.TmuxBackend().list_sessions(), ["first", "second"])
+
+    def test_dollar_in_name_reaches_tmux_verbatim(self):
+        tsesh.TmuxBackend().create("literal-${USER}", "/", None)
+        self.assertEqual(tsesh.TmuxBackend().list_sessions(), ["literal-${USER}"])
+
+
 if __name__ == "__main__":
     unittest.main()

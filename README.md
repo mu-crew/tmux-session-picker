@@ -68,6 +68,18 @@ tsesh reads one tmux option per session, `@murmur_session_state`, in a single
 session's agents. Any tool can set it; the values are `crashed`, `blocked`,
 `done` and `working`.
 
+## Server lifetime
+
+When tsesh starts the tmux server from inside a unit of the systemd user
+manager, it runs the server under `systemd-run --user --scope`. A shell in a
+`foot --server` window is the usual case. The server would otherwise stay in
+that unit's cgroup, and a stop or restart of the unit would kill every session.
+A login shell (ssh, a tty) sits in logind's own session scope, which tmux
+already outlives at logout, so tsesh starts plain `tmux` there. Moving that
+server under `user@.service` would end it about 10 s after the last logout
+unless lingering is on. macOS, containers and hosts without `systemd-run` also
+get plain `tmux`.
+
 ## Theme
 
 Catppuccin Mocha, hardcoded in `bin/tsesh` between `THEME BEGIN` / `THEME END`

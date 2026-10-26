@@ -73,6 +73,62 @@ def tmux_cmd(
     )
 
 
+def server_running() -> bool:
+    return tmux_cmd("list-sessions", check=False).returncode == 0
+
+
+def systemd_cgroup(proc_cgroup: str) -> str:
+    """The systemd cgroup path from ``/proc/<pid>/cgroup`` text, or "".
+
+    Hybrid hosts track units in the ``name=systemd`` v1 hierarchy; pure v2
+    hosts have only the ``0::`` line.
+    """
+    paths = dict(
+        line.split(":", 2)[1:]
+        for line in proc_cgroup.splitlines()
+        if line.count(":") >= 2
+    )
+    return paths.get("name=systemd", paths.get("", ""))
+
+
+def in_user_manager(proc_cgroup: str) -> bool:
+    """True when the cgroup belongs to a unit of the user's systemd manager.
+
+    That is where a server inherits a service's lifetime, e.g. a shell in a
+    ``foot --server`` window. A login shell (ssh, tty) sits in logind's
+    ``session-N.scope`` instead, which survives logout as an abandoned scope
+    while ``user@UID.service`` is stopped once the last session ends, so a
+    server started there must stay put.
+    """
+    return "/user@" in systemd_cgroup(proc_cgroup)
+
+
+def start_server_in_own_scope(new_session: tuple[str, ...]) -> bool:
+    """Start the tmux server in its own systemd scope; False if not done.
+
+    The server forks off whoever ran ``tmux`` and stays in that process's
+    cgroup. Under a user service, stopping or restarting that service kills
+    every session; a transient scope gives the server its own cgroup. Outside
+    the user manager (macOS, ssh and tty logins, containers) or when
+    systemd-run fails, this returns False and the caller runs plain tmux.
+    """
+    try:
+        proc_cgroup = Path("/proc/self/cgroup").read_text()
+    except OSError:
+        return False
+    if not (in_user_manager(proc_cgroup) and shutil.which("systemd-run")):
+        return False
+    # No expansion: tmux must get session names and paths containing "$"
+    # verbatim. systemd < 254 rejects the flag and we fall back.
+    cmd = ("systemd-run", "--user", "--scope", "--quiet", "--collect")
+    result = subprocess.run(
+        [*cmd, "--expand-environment=no", "tmux", *tmux_socket_args(), *new_session],
+        check=False,
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 def session_states() -> dict[str, AgentState]:
     """Every live session's agent state, in one tmux call."""
     result = tmux_cmd(
@@ -950,7 +1006,9 @@ class TmuxBackend:
     def create(
         self, name: str, path: str, startup: str | None, split: str = ""
     ) -> None:
-        tmux_cmd("new-session", "-d", "-s", name, "-c", path, capture=False)
+        new_session = ("new-session", "-d", "-s", name, "-c", path)
+        if server_running() or not start_server_in_own_scope(new_session):
+            tmux_cmd(*new_session, capture=False)
         if startup:
             tmux_cmd(
                 "send-keys",
