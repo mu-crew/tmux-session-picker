@@ -1096,6 +1096,7 @@ def agent_pane(**over):
         "visible": True,
         "jump_target": "j1:abc",
         "updated_at": None,
+        "attached_pane": None,
     }
     pane.update(over)
     return pane
@@ -1213,10 +1214,35 @@ class MurmurSnapshotValidation(FakeMurmur):
             "session_name": 7,
             "updated_at": "now",
             "jump_target": "",
+            "attached_pane": "origin",
+            "pane": "notes",
         }
         for field, value in bad.items():
             with self.subTest(field=field):
                 self.assert_legacy(agent_pane(**{field: value}))
+
+    def test_values_that_used_to_raise_fall_back(self):
+        cases = [
+            {"render_state": []},
+            {"render_state": {}},
+            {"server": {"kind": {}}},
+            {"server": {"kind": "path", "value": "/tmp/x\x00y"}},
+            {"updated_at": 10**400},
+            {"updated_at": True},
+            {"local": False, "attached_pane": "%1\x00"},
+            {"jump_target": "j1:a\x00b"},
+            {"label": "a\x00b"},
+            {"pane": "%1; kill-server"},
+            {"pane": "%"},
+        ]
+        for over in cases:
+            with self.subTest(over=over):
+                self.assert_legacy(agent_pane(**over))
+
+    def test_attached_pane_must_be_present(self):
+        pane = agent_pane()
+        del pane["attached_pane"]
+        self.assert_legacy(pane)
 
     def test_nan_is_not_a_traceback(self):
         self.install([agent_pane()])
