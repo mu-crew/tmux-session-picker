@@ -1150,6 +1150,69 @@ class MurmurProbe(FakeMurmur):
             self.assertIsNone(tsesh.murmur_panes())
 
 
+class MurmurSnapshotValidation(FakeMurmur):
+    """A malformed snapshot is rejected as a whole, never half-used."""
+
+    def setUp(self):
+        cfg = config()
+        for owner, attr, value in (
+            (tsesh, "load_config", lambda: cfg),
+            (tsesh, "zoxide_paths", list),
+            (tsesh.TmuxBackend, "snapshot", lambda self: {"notes": State.blocked}),
+        ):
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
+
+    def assert_legacy(self, pane):
+        self.install([pane])
+        self.assertIsNone(tsesh.murmur_panes())
+        entries = tsesh.build_entries("all")
+        self.assertFalse([e for e in entries if e.kind == "agent"])
+        notes = next(e for e in entries if e.name == "notes")
+        self.assertEqual(notes.agent_counts, ())
+        self.assertEqual(notes.worst_state, State.blocked)
+        self.assertFalse(any(c.startswith("collect") for c in self.calls()))
+
+    def test_missing_fields_fall_back(self):
+        for field in ("label", "visible", "server", "local", "pane", "host"):
+            with self.subTest(missing=field):
+                pane = agent_pane()
+                del pane[field]
+                self.assert_legacy(pane)
+
+    def test_ill_typed_fields_fall_back(self):
+        bad = {
+            "label": 3,
+            "visible": "yes",
+            "local": 1,
+            "server": {"kind": "bogus"},
+            "render_state": "sleeping",
+            "session_name": 7,
+            "updated_at": "now",
+            "jump_target": "",
+        }
+        for field, value in bad.items():
+            with self.subTest(field=field):
+                self.assert_legacy(agent_pane(**{field: value}))
+
+    def test_nan_is_not_a_traceback(self):
+        self.install([agent_pane()])
+        raw = (
+            (self.dir / "status.json")
+            .read_text()
+            .replace('"updated_at": null', '"updated_at": NaN')
+        )
+        (self.dir / "status.json").write_text(raw)
+        self.assertIsNone(tsesh.murmur_panes())
+        entries = tsesh.build_entries("sessions")
+        self.assertEqual(entries[0].worst_state, State.blocked)
+
+    def test_non_object_snapshot_falls_back(self):
+        self.install([])
+        (self.dir / "status.json").write_text("[]")
+        self.assertIsNone(tsesh.murmur_panes())
+
+
 class MurmurRows(FakeMurmur):
     def setUp(self):
         cfg = config(sessions=(tsesh.SessionConfig(name="pinned", path="/tmp/pinned"),))
