@@ -1714,6 +1714,10 @@ def run_fzf(
         )
 
 
+# fzf's exit codes for "no selection": no match (1) and aborted (130).
+FZF_NOTHING_CHOSEN = {1, 130}
+
+
 def fzf(mode: str = "all", query: str = "") -> int:
     return run_fzf(mode, query, capture=False).returncode
 
@@ -1730,6 +1734,10 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
     os.environ["TSESH_CURRENT_PANE"] = pane
     os.environ["TSESH_CURRENT_SESSION"] = session
     proc = run_fzf(mode, query, capture=True)
+    if proc.returncode in FZF_NOTHING_CHOSEN:
+        # esc, ctrl-c, or enter with no match: a clean exit. run-shell would
+        # otherwise print "returned 130" over the pane once the popup closes.
+        return 0
     if proc.returncode != 0:
         return proc.returncode
     # Strip only the trailing newline fzf appends, not surrounding whitespace.

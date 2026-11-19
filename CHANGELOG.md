@@ -44,6 +44,8 @@ versions follow [SemVer](https://semver.org/).
 ### Fixed
 
 - Switching sessions from the popup moves the client that opened it.
+- Closing the picker with `esc` (or Enter on no match) exits 0, so tmux no
+  longer prints "returned 130" over the pane.
 
 - A new session for a directory no longer lands in another directory's session
   when their names sanitize alike (`a.b` and `a_b`); the second is suffixed

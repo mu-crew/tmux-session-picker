@@ -311,6 +311,7 @@ class EmptyState(Harness):
     def test_no_agents_says_so_and_stays_open(self):
         out = self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
         self.assertEqual(out.stderr, "")
+        self.assertEqual(out.returncode, 0)  # esc is a clean exit
         start = self.steps()[0]
         self.assertEqual(start["rows"], [])
         self.assertIn("No agents", plain(start["header"]))
@@ -382,7 +383,7 @@ class MurmurUnavailable(Harness):
         out = self.tsesh(
             "pick-and-connect", "--mode", "agents", **self.in_tmux(), **env
         )
-        self.assertNotIn("Traceback", out.stderr)
+        self.assertEqual((out.returncode, out.stderr), (0, ""))  # clean exit
         start = self.steps()[0]
         self.assertEqual(start["rows"], [])
         return plain(start["header"])
