@@ -2219,7 +2219,7 @@ def last() -> int:
     #
     # We collect both pointers (the backend's own notion of "last", then our
     # LAST_FILE) and switch to the first that's still live. If none are,
-    # exit 0 without output.
+    # exit 0 (with a tmux message when inside tmux).
     candidates: list[str] = list(backend().last_candidates())
     if LAST_FILE.exists():
         name = LAST_FILE.read_text().strip()
@@ -2229,6 +2229,8 @@ def last() -> int:
         if backend().exists(name):
             backend().switch(name)
             return 0
+    if os.environ.get("TMUX"):
+        tmux_cmd("display-message", "tsesh: no previous session", check=False)
     return 0
 
 

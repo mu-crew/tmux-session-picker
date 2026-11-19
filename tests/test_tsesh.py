@@ -568,6 +568,25 @@ class LiveTmux(unittest.TestCase):
         self.assertIn("busy", buf.getvalue())
         self.assertNotIn("\tfind\t", buf.getvalue())
 
+    def test_last_with_no_candidate_says_so_in_tmux_only(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        missing = tmp / "last"
+        for env, expect in (({"TMUX": "x"}, 1), ({}, 0)):
+            with (
+                mock_env(env, remove=() if env else ("TMUX",)),
+                unittest.mock.patch.object(tsesh, "LAST_FILE", missing),
+                unittest.mock.patch.object(
+                    tsesh.TmuxBackend, "last_candidates", lambda s: []
+                ),
+                unittest.mock.patch.object(tsesh, "tmux_cmd") as cmd,
+            ):
+                self.assertEqual(tsesh.main(["last"]), 0)
+            msgs = [c for c in cmd.call_args_list if c.args[:1] == ("display-message",)]
+            self.assertEqual(len(msgs), expect)
+            if expect:
+                self.assertIn("no previous session", msgs[0].args[1])
+
     def test_no_server_is_no_state(self):
         os.environ["TSESH_TMUX_SOCKET_NAME"] = f"{self.socket}-absent"
         self.assertEqual(tsesh.TmuxBackend().live_sessions(), {})
