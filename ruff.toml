@@ -1,4 +1,5 @@
 line-length = 88
+include = ["*.py", "bin/tsesh"]
 # tsesh runs under each host's `#!/usr/bin/env python3`; keep syntax at 3.11
 # (tomllib is the floor).
 target-version = "py311"
