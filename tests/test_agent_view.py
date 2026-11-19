@@ -433,26 +433,35 @@ class SessionNotice(Harness):
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
 class AgentsKey(unittest.TestCase):
-    def bind(self, *options):
+    def setUp(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         sock = tmp / "s"
-        tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
-        subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
-        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        self.tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
+        subprocess.run([*self.tmux, "new-session", "-d", "-s", "x"], check=True)
+        self.addCleanup(
+            subprocess.run, [*self.tmux, "kill-server"], capture_output=True
+        )
+        self.env = dict(os.environ, TMUX=f"{sock},1,0")
+
+    def bind(self, *options):
+        """Set OPTIONS, source tsesh.tmux, return the prefix table."""
         for name, value in options:
-            subprocess.run([*tmux, "set-option", "-g", name, value], check=True)
-        env = dict(os.environ, TMUX=f"{sock},1,0")
-        subprocess.run(["bash", str(ROOT / "tsesh.tmux")], env=env, check=True)
+            subprocess.run([*self.tmux, "set-option", "-g", name, value], check=True)
+        subprocess.run(["bash", str(ROOT / "tsesh.tmux")], env=self.env, check=True)
         return subprocess.run(
-            [*tmux, "list-keys", "-T", "prefix"],
+            [*self.tmux, "list-keys", "-T", "prefix"],
             capture_output=True,
             text=True,
             check=True,
         ).stdout
 
+    @staticmethod
+    def bound(keys, key):
+        return [k for k in keys.splitlines() if re.search(rf"prefix\s+{key}\s", k)]
+
     def test_prefix_a_opens_the_agents_view(self):
-        keys = [k for k in self.bind().splitlines() if re.search(r"prefix\s+a\s", k)]
+        keys = self.bound(self.bind(), "a")
         self.assertEqual(len(keys), 1, keys)
         self.assertIn("--mode agents", keys[0])
         self.assertIn("--client", keys[0])
@@ -462,9 +471,30 @@ class AgentsKey(unittest.TestCase):
         keys = self.bind(("@tsesh_key_agents", ""))
         self.assertNotIn("--mode agents", keys)
 
+    def test_empty_option_unbinds_a_key_bound_by_an_earlier_source(self):
+        defaults = {"pick": "s", "agents": "a", "last": "g", "root": "T"}
+        for name, key in defaults.items():
+            with self.subTest(option=name):
+                option = f"@tsesh_key_{name}"
+                self.assertTrue(self.bound(self.bind(), key))
+                self.assertFalse(self.bound(self.bind((option, "")), key))
+                self.assertTrue(self.bound(self.bind((option, "z")), "z"))
+                self.assertFalse(self.bound(self.bind((option, "")), "z"))
+                subprocess.run([*self.tmux, "set-option", "-gu", option], check=True)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_moving_a_key_frees_the_old_one(self):
+        self.bind(("@tsesh_key_agents", "z"))
+        keys = self.bind(("@tsesh_key_agents", "y"))
+        self.assertFalse(self.bound(keys, "z"))
+        self.assertIn("--mode agents", self.bound(keys, "y")[0])
+
+    def test_a_key_the_user_rebound_is_left_alone(self):
+        self.bind(("@tsesh_key_agents", "z"))
+        subprocess.run(
+            [*self.tmux, "bind-key", "z", "display-message", "mine"], check=True
+        )
+        keys = self.bind(("@tsesh_key_agents", ""))
+        self.assertIn("mine", self.bound(keys, "z")[0])
 
 
 @unittest.skipUnless(shutil.which("fzf"), "needs fzf")
@@ -525,3 +555,7 @@ class RealFzf(Harness):
         self.tmux("send-keys", "-t", "notes:picker", "Enter")
         self.assertIn("EXIT=0", self.wait_for("EXIT="))
         self.assertIn("jump j9:x", self.murmur_calls())
+
+
+if __name__ == "__main__":
+    unittest.main()
