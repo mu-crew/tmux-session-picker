@@ -528,6 +528,36 @@ class NameCollision(unittest.TestCase):
         tsesh.connect(str(d))
         self.assertEqual(self.session_paths().count(str(d)), 1, self.sessions())
 
+    def test_picker_rows_for_colliding_dirs_get_distinct_sessions(self):
+        home = self.tmp / "home"
+        a, b = home / "a.b", home / "a_b"
+        a.mkdir(parents=True)
+        b.mkdir()
+        shim_dir = self.tmp / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "fzf"
+        shim.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "for row in sys.stdin.read().splitlines():\n"
+            "    if row.split('\\t')[3] == os.environ['SHIM_PICK']:\n"
+            "        print(row)\n"
+            "        sys.exit(0)\n"
+            "sys.exit(1)\n"
+        )
+        shim.chmod(0o755)
+        old_load = tsesh.load_config
+        tsesh.load_config = lambda: config(blacklist=frozenset())
+        self.addCleanup(setattr, tsesh, "load_config", old_load)
+        env = {"HOME": str(home), "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+        with mock_env(env):
+            for d in (a, b):
+                os.environ["SHIM_PICK"] = str(d)
+                self.assertEqual(tsesh.pick_and_connect("find"), 0)
+        self.assertEqual(
+            sorted(self.session_paths()), sorted([str(a), str(b), str(Path.cwd())])
+        )
+
 
 class FakeServer:
     """A tmux server that may "restore" sessions when started.
