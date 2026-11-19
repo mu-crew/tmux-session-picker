@@ -529,11 +529,19 @@ class NameCollision(unittest.TestCase):
         return out.split()
 
     def session_paths(self):
+        """Every session's raw #{session_path}, read as bytes (CR != LF)."""
+        out = subprocess.run(
+            [
+                *("tmux", "-f", "/dev/null", "-S", str(self.sock)),
+                *("list-sessions", "-F", "#{session_path}\x1e"),
+            ],
+            check=False,
+            capture_output=True,
+        ).stdout
         return [
-            self.run_tmux(
-                "display-message", "-p", "-t", f"={n}:", "#{session_path}"
-            ).stdout.removesuffix("\n")
-            for n in self.sessions()
+            os.fsdecode(rec).lstrip("\n")
+            for rec in out.split(b"\x1e")
+            if rec.strip(b"\n")
         ]
 
     def test_recreated_session_does_not_duplicate_a_surviving_suffixed_one(self):
@@ -554,13 +562,10 @@ class NameCollision(unittest.TestCase):
         tsesh.connect(str(d))
         self.assertEqual(self.session_paths().count(str(d)), 1, self.sessions())
 
-    def test_picker_rows_for_colliding_dirs_get_distinct_sessions(self):
-        home = self.tmp / "home"
-        a, b = home / "a.b", home / "a_b"
-        a.mkdir(parents=True)
-        b.mkdir()
+    def pick_find_row(self, home, target):
+        """pick_and_connect("find") over real rows, fzf shim picks TARGET."""
         shim_dir = self.tmp / "bin"
-        shim_dir.mkdir()
+        shim_dir.mkdir(exist_ok=True)
         shim = shim_dir / "fzf"
         shim.write_text(
             "#!/usr/bin/env python3\n"
@@ -575,14 +580,52 @@ class NameCollision(unittest.TestCase):
         old_load = tsesh.load_config
         tsesh.load_config = lambda: config(blacklist=frozenset())
         self.addCleanup(setattr, tsesh, "load_config", old_load)
-        env = {"HOME": str(home), "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+        env = {
+            "HOME": str(home),
+            "PATH": f"{shim_dir}:{os.environ['PATH']}",
+            "SHIM_PICK": str(target),
+        }
         with mock_env(env):
-            for d in (a, b):
-                os.environ["SHIM_PICK"] = str(d)
-                self.assertEqual(tsesh.pick_and_connect("find"), 0)
+            self.assertEqual(tsesh.pick_and_connect("find"), 0)
+
+    def test_picker_rows_for_colliding_dirs_get_distinct_sessions(self):
+        home = self.tmp / "home"
+        a, b = home / "a.b", home / "a_b"
+        a.mkdir(parents=True)
+        b.mkdir()
+        for d in (a, b):
+            self.pick_find_row(home, d)
         self.assertEqual(
             sorted(self.session_paths()), sorted([str(a), str(b), str(Path.cwd())])
         )
+
+    def test_cr_and_lf_directories_are_distinct(self):
+        cr, lf = self.tmp / "double\rline", self.tmp / "double\nline"
+        cr.mkdir()
+        lf.mkdir()
+        self.run_tmux("new-session", "-d", "-s", "double-line", "-c", str(cr))
+        tsesh.connect(str(lf))
+        self.assertIn(str(lf), self.session_paths())
+        tsesh.connect(str(cr))
+        tsesh.connect(str(cr))
+        self.assertEqual(self.session_paths().count(str(cr)), 1)
+
+    def test_retargeted_symlink_does_not_alias_the_old_session(self):
+        home = self.tmp / "home"
+        old, new = home / "old-dir", home / "new-dir"
+        old.mkdir(parents=True)
+        new.mkdir()
+        link = home / "current"
+        link.symlink_to(old)
+        tsesh.connect(str(link))
+        link.unlink()
+        link.symlink_to(new)
+        tsesh.connect(str(new))
+        self.assertIn(str(new), self.session_paths())
+        self.pick_find_row(home, old)  # via the picker: old gets its session
+        self.assertEqual(self.session_paths().count(str(old)), 1)
+        self.pick_find_row(home, new)
+        self.assertEqual(self.session_paths().count(str(new)), 1)
 
 
 class FakeServer:

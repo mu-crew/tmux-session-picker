@@ -78,6 +78,13 @@ def tmux_cmd(
     )
 
 
+def tmux_bytes(*args: str) -> subprocess.CompletedProcess[bytes]:
+    """tmux output as bytes: text mode turns a CR in a path into a newline."""
+    return subprocess.run(
+        ["tmux", *tmux_socket_args(), *args], check=False, capture_output=True
+    )
+
+
 def server_running() -> bool:
     return tmux_cmd("list-sessions", check=False).returncode == 0
 
@@ -1043,7 +1050,9 @@ class TmuxBackend:
     def create(
         self, name: str, path: str, startup: str | None, split: str = ""
     ) -> None:
-        new_session = ("new-session", "-d", "-s", name, "-c", path)
+        # realpath: session_path then names the directory, not a symlink that
+        # may later point elsewhere (see live_session_for_path).
+        new_session = ("new-session", "-d", "-s", name, "-c", os.path.realpath(path))
         if not server_running():
             # Starting the server may restore NAME; new-session would then
             # fail with "duplicate session". Start it first, then look again.
@@ -1136,33 +1145,28 @@ def pane_cwd(pane_id: str) -> str:
     (``%[0-9]+``) and is the only value safe to interpolate, so the
     binding passes that and we fetch the path over a pipe.
     """
-    result = tmux_cmd(
-        "display-message", "-p", "-t", pane_id, "#{pane_current_path}", check=False
-    )
+    result = tmux_bytes("display-message", "-p", "-t", pane_id, "#{pane_current_path}")
     if result.returncode != 0:
         return ""
-    return result.stdout.removesuffix("\n")
+    return os.fsdecode(result.stdout).removesuffix("\n")
 
 
 def live_session_for_path(path: str) -> str | None:
     """The live session rooted exactly at PATH, if any.
 
-    One display-message per session: a path may hold a newline, which would
-    corrupt a single list-sessions listing.
+    One list-sessions call, read as bytes. Records end in \\x1e and fields
+    split on \\x1f, since a path may hold newlines or carriage returns. Sessions
+    are created with ``-c <realpath>``, so session_path is canonical; compare it
+    unresolved, or a retargeted symlink would alias the session started at the
+    old target.
     """
-    wanted = Path(path).expanduser().resolve()
-    ids = tmux_cmd("list-sessions", "-F", "#{session_id}", check=False)
-    for session_id in ids.stdout.split():
-        info = tmux_cmd(
-            "display-message",
-            "-p",
-            "-t",
-            session_id,
-            "#{session_name}\t#{session_path}",
-            check=False,
-        )
-        name, _, root = info.stdout.removesuffix("\n").partition("\t")
-        if root and Path(root).resolve() == wanted:
+    wanted = os.path.realpath(os.path.expanduser(path))
+    result = tmux_bytes("list-sessions", "-F", "#{session_name}\x1f#{session_path}\x1e")
+    if result.returncode != 0:
+        return None
+    for record in result.stdout.split(b"\x1e"):
+        name, sep, root = os.fsdecode(record.lstrip(b"\n")).partition("\x1f")
+        if sep and root == wanted:
             return name
     return None
 
