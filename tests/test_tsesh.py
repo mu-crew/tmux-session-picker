@@ -211,6 +211,29 @@ class RowRoundTrip(unittest.TestCase):
         self.assertIsNone(payload.startup)
         self.assertEqual(payload.split, tsesh.DEFAULT_SPLIT)
 
+    def test_odd_characters_never_shift_a_field(self):
+        import random
+
+        rng = random.Random(0)
+        alphabet = ["\\", "\t", "\r", "\n", "t", "n", "r", "\\t", "$2", " ", "'", "é"]
+        fields = [n for n in tsesh.FZF_ROW_FIELDS if n != "display"]
+        for _ in range(500):
+            values = {
+                n: "".join(rng.choices(alphabet, k=rng.randrange(6))) for n in fields
+            }
+            values["kind"] = rng.choice(sorted(tsesh.KIND_ICON))
+            entry = tsesh.Entry(name=values["session_name"], **values)
+            row = entry.to_fzf_row()
+            self.assertEqual(len(row.split("\t")), len(tsesh.FZF_ROW_FIELDS))
+            self.assertNotIn("\n", row)
+            self.assertNotIn("\r", row)
+            parsed = tsesh.Entry.from_fzf_row(row)
+            self.assertEqual(parsed, {"display": entry.visible_text(), **values})
+            payload = tsesh.EntryPayload.from_fzf_row(row)
+            self.assertEqual(payload.session_name, values["session_name"])
+            self.assertEqual(payload.path, values["path"] or None)
+            self.assertEqual(payload.startup, values["startup"] or None)
+
     def test_short_row_fails_loudly(self):
         with self.assertRaises(tsesh.ConfigError):
             tsesh.Entry.from_fzf_row("a\tb")
@@ -518,7 +541,7 @@ class LiveTmux(unittest.TestCase):
     def test_kill_removes_a_live_session_row(self):
         with unittest.mock.patch.object(tsesh, "load_config", config):
             sid = self.session_id("quiet")
-        self.assertEqual(tsesh.main(["kill", f"--session-id={sid}"]), 0)
+        self.assertEqual(tsesh.main(["kill", "--kind=tmux", f"--session-id={sid}"]), 0)
         self.assertEqual(self.sessions(), ["busy", "odd"])
 
     def test_kill_ignores_rows_without_a_live_session_id(self):
@@ -527,7 +550,12 @@ class LiveTmux(unittest.TestCase):
             gone = self.session_id("gone")
         self.tmux("kill-session", "-t", gone)
         for sid in ("", gone, "quiet", "=quiet", "$x"):
-            tsesh.main(["kill", f"--session-id={sid}"])
+            tsesh.main(["kill", "--kind=tmux", f"--session-id={sid}"])
+        # Only a session row's id counts, whatever field it came from.
+        with unittest.mock.patch.object(tsesh, "load_config", config):
+            quiet = self.session_id("quiet")
+        for kind in ("agent", "zoxide", "find", ""):
+            tsesh.main(["kill", f"--kind={kind}", f"--session-id={quiet}"])
         self.assertEqual(self.sessions(), ["busy", "odd", "quiet"])
 
     def test_kill_refuses_the_clients_current_session_with_a_message(self):
@@ -565,9 +593,9 @@ class LiveTmux(unittest.TestCase):
         self.assertTrue(client)
         with unittest.mock.patch.object(tsesh, "load_config", config):
             busy, quiet = self.session_id("busy"), self.session_id("quiet")
-        tsesh.main(["kill", f"--session-id={busy}", "--client", client])
+        tsesh.main(["kill", "--kind=tmux", f"--session-id={busy}", "--client", client])
         self.assertIn("busy", self.sessions())
-        tsesh.main(["kill", f"--session-id={quiet}", "--client", client])
+        tsesh.main(["kill", "--kind=tmux", f"--session-id={quiet}", "--client", client])
         self.assertNotIn("quiet", self.sessions())
         shown = subprocess.run(
             ["tmux", "-L", self.socket, "show-messages", "-t", client],
@@ -654,7 +682,16 @@ class KillInPopup(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         config = tmp / "config.toml"
-        config.write_text(f'[[sessions]]\nname = "$2"\npath = "{tmp}"\n')
+        tabbed = tmp / "tab\tpath"
+        tabbed.mkdir()
+        # Tabs in a pin's startup or path must not shift the row's fields:
+        # the startup's "$2" once landed where ctrl-x reads the id.
+        config.write_text(
+            f'[[sessions]]\nname = "$2"\npath = "{tmp}"\n'
+            f'[[sessions]]\nname = "not-running"\npath = "{tmp}"\n'
+            "startup = \"printf 'left\\t\\t\\t\\t\\t\\t\\t$2\\tright'\"\n"
+            f'[[sessions]]\nname = "pin-tab"\npath = "{tmp}/tab\\tpath"\n'
+        )
         self.env = dict(
             os.environ,
             TSESH_TMUX_SOCKET_PATH=str(tmp / "s"),
@@ -668,6 +705,7 @@ class KillInPopup(unittest.TestCase):
         # origin is $0; a session literally named "$0" must not alias it.
         for name in ("origin", "$0", " spaced ", "spaced", "-flag", "dot.name"):
             self.run_tmux("new-session", "-d", "-s", name, "-c", str(tmp))
+        self.run_tmux("new-session", "-d", "-s", "pin-tab", "-c", str(tabbed))
         pid, self.fd = pty.fork()
         if pid == 0:
             os.execvpe(self.tmux[0], [*self.tmux, "attach", "-t", "=origin"], self.env)
@@ -751,20 +789,28 @@ class KillInPopup(unittest.TestCase):
     def sessions(self):
         return set(self.run_tmux("list-sessions", "-F", "#{session_name}").splitlines())
 
+    @staticmethod
+    def kind_and_name(text):
+        try:
+            row = tsesh.Entry.from_fzf_row(text)
+        except tsesh.ConfigError:
+            return None
+        return row["kind"], row["session_name"]
+
     def ctrl_x_on(self, kind, name):
         def highlight():
             state = self.fzf_state()
             if state.get("reading"):
                 return None
-            rows = [m["text"].split("\t") for m in state["matches"]]
-            hit = [i for i, r in enumerate(rows) if r[1:3] == [kind, name]]
+            rows = [self.kind_and_name(m["text"]) for m in state["matches"]]
+            hit = [i for i, r in enumerate(rows) if r == (kind, name)]
             if not hit:
                 return None
             pos = hit[0] + 1
             req = Request(f"http://127.0.0.1:{self.port}", data=f"pos({pos})".encode())
             self.urlopen(req, timeout=2).close()
             current = self.fzf_state().get("current") or {}
-            return current.get("text", "").split("\t")[1:3] == [kind, name]
+            return self.kind_and_name(current.get("text", "")) == (kind, name)
 
         self.wait(highlight)
         os.write(self.fd, b"\x18")
@@ -773,9 +819,14 @@ class KillInPopup(unittest.TestCase):
         before = self.sessions()
         dot = "dot.name" if "dot.name" in before else None
         # A pinned row that is not running has no id: nothing dies.
-        self.ctrl_x_on("default", "$2")
-        time.sleep(1)
-        self.assertEqual(self.sessions(), before)
+        for pin in ("$2", "not-running"):
+            self.ctrl_x_on("default", pin)
+            time.sleep(1)
+            self.assertEqual(self.sessions(), before, pin)
+        # A live pin whose path holds a tab is killed like any other.
+        self.ctrl_x_on("default", "pin-tab")
+        self.wait(lambda: "pin-tab" not in self.sessions())
+        before.discard("pin-tab")
         targets = ["$0", " spaced ", "-flag", *([dot] if dot else [])]
         for name in targets:
             self.ctrl_x_on("tmux", name)

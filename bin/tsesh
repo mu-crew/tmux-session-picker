@@ -298,6 +298,21 @@ def marker_cell(marker: str) -> str:
     return " "
 
 
+ROW_ESCAPES = {"\\": "\\\\", "\t": "\\t", "\r": "\\r", "\n": "\\n"}
+ROW_UNESCAPES = {v[1]: k for k, v in ROW_ESCAPES.items()}
+
+
+def row_escape(value: str) -> str:
+    """One picker-row field with no tab, CR or LF left in it: a tab would
+    shift every later field, a line break would split the row."""
+    return re.sub(r"[\\\t\r\n]", lambda m: ROW_ESCAPES[m[0]], value)
+
+
+def row_unescape(value: str) -> str:
+    """Undo row_escape, for a field read back from a row or an fzf {N}."""
+    return re.sub(r"\\(.)", lambda m: ROW_UNESCAPES.get(m[1], m[0]), value, flags=re.S)
+
+
 def state_cell(counts: tuple[tuple[AgentState, int], ...]) -> str:
     """Per-state agent counts, strongest first, within STATE_WIDTH.
 
@@ -395,7 +410,7 @@ class Entry:
             "socket": self.socket,
             "session_id": self.session_id,
         }
-        return "\t".join(values[name] for name in FZF_ROW_FIELDS)
+        return "\t".join(row_escape(values[name]) for name in FZF_ROW_FIELDS)
 
     @classmethod
     def from_fzf_row(cls, row: str) -> dict[str, str]:
@@ -412,7 +427,7 @@ class Entry:
                 f"Invalid picker row: expected {len(FZF_ROW_FIELDS)} "
                 f"tab-separated fields, got {len(parts)}"
             )
-        return dict(zip(FZF_ROW_FIELDS, parts, strict=True))
+        return dict(zip(FZF_ROW_FIELDS, map(row_unescape, parts), strict=True))
 
 
 @dataclass(frozen=True)
@@ -1665,9 +1680,11 @@ def kill_bind() -> str:
     """
     me = sh_quote(sys.argv[0])
     client = f" --client {sh_quote(INVOKING_CLIENT)}" if INVOKING_CLIENT else ""
+    kind = FZF_ROW_FIELDS.index("kind") + 1
     field = FZF_ROW_FIELDS.index("session_id") + 1
     return (
-        f"ctrl-x:execute-silent({me} kill --session-id={{{field}}}{client})"
+        f"ctrl-x:execute-silent({me} kill --kind={{{kind}}}"
+        f" --session-id={{{field}}}{client})"
         f'+reload({me} list --prompt "$FZF_PROMPT")'
     )
 
@@ -2199,14 +2216,15 @@ def connect(target: str) -> int:
     return connect_resolved(name, path, None, DEFAULT_SPLIT, derived_name=True)
 
 
-def kill(session_id: str, client: str = "") -> int:
-    """Kill the session with tmux id SESSION_ID (``$N``), from a picker row.
+def kill(kind: str, session_id: str, client: str = "") -> int:
+    """Kill the session with tmux id SESSION_ID (``$N``), from a picker row
+    of KIND.
 
     Only live session rows carry an id, so any other row is a no-op. A name
     is no target: ``=$0`` means id $0 and ``=a.b`` means window b. The
     session the invoking client is attached to is refused with a message.
     """
-    if not re.fullmatch(r"\$[0-9]+", session_id):
+    if kind not in ("default", "tmux") or not re.fullmatch(r"\$[0-9]+", session_id):
         return 0
     listed = tmux_bytes("list-sessions", "-F", "#{session_id}\t#{session_name}")
     names = dict(
@@ -2354,6 +2372,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_list.add_argument("--prompt", default="", help=argparse.SUPPRESS)
 
         p_kill = sub.add_parser("kill")
+        p_kill.add_argument("--kind", default="")
         p_kill.add_argument("--session-id", default="")
         p_kill.add_argument("--client", default="")
 
@@ -2409,7 +2428,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.cmd == "fzf-enter":
             return fzf_enter()
         if args.cmd == "kill":
-            return kill(args.session_id, args.client)
+            return kill(
+                row_unescape(args.kind), row_unescape(args.session_id), args.client
+            )
         if args.cmd == "picker":
             return fzf(args.mode, query=args.query)
         if args.cmd == "pick-and-connect":
@@ -2421,15 +2442,21 @@ def main(argv: Iterable[str] | None = None) -> int:
                 return 1
             return connect(target)
         if args.cmd == "preview":
+            # fzf hands over the row's fields still escaped.
             return preview(
-                args.path,
-                args.session_name,
-                args.kind,
-                args.split,
-                args.host,
-                args.pane,
-                args.here,
-                args.socket,
+                *map(
+                    row_unescape,
+                    (
+                        args.path,
+                        args.session_name,
+                        args.kind,
+                        args.split,
+                        args.host,
+                        args.pane,
+                        args.here,
+                        args.socket,
+                    ),
+                )
             )
         if args.cmd == "last":
             return last()

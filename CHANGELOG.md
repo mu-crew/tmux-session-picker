@@ -22,7 +22,8 @@ versions follow [SemVer](https://semver.org/).
   It ignores agent, zoxide, find and not-running pinned rows and refuses the
   session the client is in, with a tmux message. It targets the session by its
   tmux id, so names like `$0`, `-x`, `a.b` or ones with outer spaces kill that
-  session and no other. Also available as `tsesh kill --session-id='$N'`.
+  session and no other. Also available as
+  `tsesh kill --kind=tmux --session-id='$N'`.
 - `tsesh --version`.
 - murmur's `error` and `waiting` agent states, with murmur's glyphs. `error`
   counts as needing attention.
@@ -50,6 +51,9 @@ versions follow [SemVer](https://semver.org/).
 
 ### Fixed
 
+- Picker rows escape backslashes, tabs and line breaks in every field, so a
+  pinned path or startup command holding a tab no longer shifts the fields
+  after it.
 - Switching sessions from the popup moves the client that opened it.
 - Closing the picker with `esc` (or Enter on no match) exits 0, so tmux no
   longer prints "returned 130" over the pane.
