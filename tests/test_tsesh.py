@@ -389,6 +389,36 @@ class LiveTmux(unittest.TestCase):
         self.assertEqual(tsesh.session_states(), {})
 
 
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class CreateWithDefaultBaseIndex(unittest.TestCase):
+    """create() on a real isolated server whose indexes start at 0."""
+
+    def setUp(self):
+        self.sock = Path(tempfile.mkdtemp()) / "s"
+        os.environ["TSESH_TMUX_SOCKET_PATH"] = str(self.sock)
+        self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_PATH", None)
+        self.addCleanup(shutil.rmtree, self.sock.parent, True)
+        self.addCleanup(self.tmux, "kill-server")
+        # Start the server here with no config so base-index stays 0.
+        self.tmux("new-session", "-d", "-s", "keep")
+        old = tsesh.start_server_in_own_scope
+        tsesh.start_server_in_own_scope = lambda args: False
+        self.addCleanup(setattr, tsesh, "start_server_in_own_scope", old)
+
+    def tmux(self, *args):
+        return subprocess.run(
+            ["tmux", "-f", "/dev/null", "-S", str(self.sock), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_startup_and_split_reach_the_new_pane(self):
+        tsesh.TmuxBackend().create("work", "/tmp", "echo hi", "vertical")
+        panes = self.tmux("list-panes", "-t", "=work", "-F", "#{pane_index}")
+        self.assertEqual(len(panes.stdout.split()), 2)
+
+
 class FakeServer:
     """A tmux server that may "restore" sessions when started.
 

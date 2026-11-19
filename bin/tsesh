@@ -394,6 +394,11 @@ def exact_pane_target(name: str, pane: str) -> str:
     return f"={name}:{pane}"
 
 
+def active_pane_target(name: str) -> str:
+    """The session's current window and active pane, whatever the base-index."""
+    return f"={name}:"
+
+
 def tildify(path: str) -> str:
     """Rewrite a leading home directory as ``~``; nothing else."""
     home = str(Path.home()).rstrip("/")
@@ -836,7 +841,7 @@ def tmux_session_preview(name: str) -> int:
     target = (
         exact_pane_target(name, f"{active_window_index}.{active_pane_index}")
         if active_window_index and active_pane_index
-        else exact_pane_target(name, "1.1")
+        else active_pane_target(name)
     )
     capture = tmux_cmd(
         "capture-pane", "-p", "-J", "-t", target, "-S", "-200", check=False
@@ -1047,7 +1052,7 @@ class TmuxBackend:
             tmux_cmd(
                 "send-keys",
                 "-t",
-                exact_pane_target(name, "1.1"),
+                active_pane_target(name),
                 startup,
                 "C-m",
                 capture=False,
@@ -1057,7 +1062,7 @@ class TmuxBackend:
                 "split-window",
                 "-h" if split == "vertical" else "-v",
                 "-t",
-                exact_pane_target(name, "1.1"),
+                active_pane_target(name),
                 "-c",
                 path,
                 capture=False,
