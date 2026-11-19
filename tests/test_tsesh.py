@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -315,6 +316,21 @@ class TmuxErrorsAreReported(unittest.TestCase):
             code = tsesh.main(["connect", "x"])
         self.assertEqual(code, 1)
         self.assertIn("no such thing", err.getvalue())
+
+
+class FindPrunesBlacklist(unittest.TestCase):
+    def test_find_fallback_skips_blacklisted_dirs(self):
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        (home / "Library" / "deep").mkdir(parents=True)
+        (home / "proj").mkdir()
+        with (
+            mock_env({"HOME": str(home)}),
+            unittest.mock.patch.object(tsesh.shutil, "which", return_value=None),
+        ):
+            cfg = config(blacklist=frozenset({"Library"}))
+            found = tsesh.find_paths(cfg)
+        self.assertEqual(found, [str(home / "proj")])
 
 
 class BuildEntries(unittest.TestCase):

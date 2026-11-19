@@ -478,7 +478,14 @@ def find_paths(config: Config) -> list[str]:
         cmd.extend([".", home])
     else:
         cmd = ["find", home, "-mindepth", "1", "-maxdepth", str(config.find_max_depth)]
-        cmd.extend(["-type", "d"])
+        # Prune blacklisted dirs so find never descends into them.
+        names = sorted(config.blacklist)
+        if names:
+            cmd.append("(")
+            for i, name in enumerate(names):
+                cmd.extend(["-o"] * (i > 0) + ["-name", name])
+            cmd.extend([")", "-prune", "-o"])
+        cmd.extend(["-type", "d", "-print"])
     result = run(cmd, check=False)
     if result.returncode != 0:
         return []
