@@ -594,10 +594,10 @@ def load_config() -> Config:
         if not isinstance(session, dict):
             raise ConfigError(f"{path}: each session must be an object")
         name = session.get("name")
-        path = session.get("path")
+        session_path = session.get("path")
         if not isinstance(name, str) or not name:
             raise ConfigError(f"{path}: session.name must be a non-empty string")
-        if not isinstance(path, str) or not path:
+        if not isinstance(session_path, str) or not session_path:
             raise ConfigError(f"{path}: session.path must be a non-empty string")
         startup = session.get("startup", "")
         if not isinstance(startup, str):
@@ -607,7 +607,9 @@ def load_config() -> Config:
             raise ConfigError(
                 f"{path}: session.split must be '', 'vertical', or 'horizontal'"
             )
-        out.append(SessionConfig(name=name, path=path, startup=startup, split=split))
+        out.append(
+            SessionConfig(name=name, path=session_path, startup=startup, split=split)
+        )
 
     return Config(
         sessions=tuple(out),

@@ -230,6 +230,15 @@ class Config(unittest.TestCase):
         with self.assertRaisesRegex(tsesh.ConfigError, "config.toml"):
             tsesh.load_config()
 
+    def test_bad_second_session_names_the_file(self):
+        tsesh.CONFIG_PATH = Path(self.tmp.name) / "config.toml"
+        tsesh.CONFIG_PATH.write_text(
+            '[[sessions]]\nname = "a"\npath = "/tmp"\n'
+            '[[sessions]]\nname = ""\npath = "/tmp"\n'
+        )
+        with self.assertRaisesRegex(tsesh.ConfigError, "config.toml"):
+            tsesh.load_config()
+
 
 class BuildEntries(unittest.TestCase):
     """The merge the picker is: which sessions appear, in what order."""
