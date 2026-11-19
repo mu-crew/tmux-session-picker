@@ -47,13 +47,16 @@ set -g @tsesh_key_last ''
 
 Inside the picker:
 
-| Key | View |
+| Key | Does |
 | --- | --- |
-| `ctrl-a` | Everything (the default) |
-| `ctrl-c` | Pinned sessions |
-| `ctrl-t` | Live sessions |
-| `ctrl-x` | zoxide directories |
-| `ctrl-f` | Directory scan under `$HOME` |
+| `ctrl-a` | All view: pinned, live, zoxide (the default) |
+| `ctrl-s` | Sessions view: pinned and live sessions |
+| `ctrl-f` | Find view: directory scan under `$HOME` |
+| `tab` / `shift-tab` | Down / up |
+| `enter` | Switch to the row, creating the session first if needed |
+| `esc` / `ctrl-c` | Abort |
+
+`tsesh list|picker|pick-and-connect --mode` takes `all`, `sessions` or `find`.
 
 ## Config
 

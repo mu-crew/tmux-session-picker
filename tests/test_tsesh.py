@@ -379,13 +379,24 @@ class BuildEntries(unittest.TestCase):
             ("yazi", "/tmp/dotfiles"),
         )
 
-    def test_live_and_pinned_modes(self):
+    def test_sessions_mode_is_pinned_then_live(self):
         self.assertEqual(
-            [e.name for e in tsesh.build_entries("tmux")], ["alpha", "notes", "zed"]
+            [e.name for e in tsesh.build_entries("sessions")],
+            ["dotfiles", "notes", "alpha", "zed"],
         )
-        self.assertEqual(
-            [e.name for e in tsesh.build_entries("default")], ["dotfiles", "notes"]
-        )
+
+    def test_modes_are_all_sessions_find(self):
+        self.assertEqual(tsesh.MODES, ["all", "sessions", "find"])
+
+
+class PickerKeys(unittest.TestCase):
+    def test_binds_follow_the_keymap(self):
+        cmd = tsesh._fzf_command("all")
+        spec = " ".join(a for i, a in enumerate(cmd) if cmd[i - 1] == "--bind")
+        binds = set(re.findall(r"(?:^|[\s,])([a-z-]+):", spec))
+        self.assertTrue({"ctrl-a", "ctrl-s", "ctrl-f", "tab", "btab"} <= binds)
+        for gone in ("ctrl-c", "ctrl-t", "ctrl-x"):
+            self.assertNotIn(gone, binds)
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
@@ -615,7 +626,7 @@ class PickerStartsServer(unittest.TestCase):
         tsesh.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 1)
         self.addCleanup(setattr, tsesh.subprocess, "run", old_run)
 
-        tsesh.pick_and_connect("tmux")
+        tsesh.pick_and_connect("sessions")
         self.assertEqual(fake.calls[0], ("scope", "start-server"))
         self.assertEqual(listed, [["work"]])
 

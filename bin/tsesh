@@ -212,9 +212,9 @@ class Config:
     find_max_depth: int
     preview_command: str
     # When the picker is launched in `all` mode and the number of live tmux
-    # sessions is >= this threshold, the initial view auto-switches to `tmux`
-    # (live sessions only). 0 disables the auto-switch. The fzf reload binds
-    # (^a/^c/^t/^x/^f) are unaffected; the user can still pull up the merged
+    # sessions is >= this threshold, the initial view auto-switches to `sessions`
+    # (pinned and live). 0 disables the auto-switch. The fzf reload binds
+    # (^a/^s/^f) are unaffected; the user can still pull up the merged
     # view with ^a after the picker is open.
     live_session_threshold: int = 0
     # Pass `--exact` to fzf so query tokens match as literal substrings
@@ -390,19 +390,21 @@ def expand(path: str) -> str:
     return str(Path(path).expanduser())
 
 
+# Which row kind's icon marks each non-"all" view.
+MODE_KIND = {"sessions": "tmux", "find": "find"}
+
+
 def prompt_for_mode(mode: str) -> str:
     # "all" is a synthetic mode that doesn't appear in KIND_ICON; the rest
     # share their glyph with the per-entry kind icon for visual consistency.
-    glyph = ">" if mode == "all" else KIND_ICON[mode]
+    glyph = ">" if mode == "all" else KIND_ICON[MODE_KIND[mode]]
     return f"{glyph}  "
 
 
 def header_text() -> str:
     items = [
         ("^a all", CATPPUCCIN["subtext0"]),
-        ("^c pinned", CATPPUCCIN["lavender"]),
-        ("^t live", CATPPUCCIN["sky"]),
-        ("^x zoxide", CATPPUCCIN["sapphire"]),
+        ("^s sessions", CATPPUCCIN["sky"]),
         ("^f find", CATPPUCCIN["subtext0"]),
     ]
     legend = "  " + " ".join(ansi_style(label, fg=color) for label, color in items)
@@ -635,7 +637,7 @@ def effective_initial_mode(mode: str, live: Mapping[str, object]) -> str:
     if threshold <= 0:
         return mode
     if len(live) >= threshold:
-        return "tmux"
+        return "sessions"
     return mode
 
 
@@ -676,7 +678,6 @@ def build_entries(
 ) -> list[Entry]:
     config = load_config()
     configured_sessions = config.sessions
-    sessions_by_name = {session.name: session for session in configured_sessions}
     configured_paths = {expand(session.path) for session in configured_sessions}
     # One list-sessions call; murmur keeps @murmur_session_state current.
     if live is None:
@@ -685,7 +686,7 @@ def build_entries(
     states = live
     entries: list[Entry] = []
 
-    if mode in {"all", "default"}:
+    if mode in {"all", "sessions"}:
         entries.extend(
             Entry(
                 kind="default",
@@ -700,26 +701,22 @@ def build_entries(
             for session in configured_sessions
         )
 
-    if mode in {"all", "tmux"}:
+    if mode in {"all", "sessions"}:
         configured_names = {session.name for session in configured_sessions}
         for session_name in sorted(live_names):
-            if mode == "all" and session_name in configured_names:
+            if session_name in configured_names:
                 continue
-            session = sessions_by_name.get(session_name)
             entries.append(
                 Entry(
                     kind="tmux",
                     name=session_name,
                     session_name=session_name,
-                    path=expand(session.path) if session else "",
-                    startup=session.startup if session else "",
-                    split=session.split if session else DEFAULT_SPLIT,
                     worst_state=states.get(session_name),
                     is_running=True,
                 )
             )
 
-    if mode in {"all", "zoxide"}:
+    if mode == "all":
         entries.extend(
             build_path_entries(
                 kind="zoxide",
@@ -906,11 +903,7 @@ def _fzf_command(mode: str, query: str = "") -> list[str]:
         "--bind",
         f"ctrl-a:change-prompt({prompt_for_mode('all')})+reload({reload_cmd('all')})",
         "--bind",
-        f"ctrl-c:change-prompt({prompt_for_mode('default')})+reload({reload_cmd('default')})",
-        "--bind",
-        f"ctrl-t:change-prompt({prompt_for_mode('tmux')})+reload({reload_cmd('tmux')})",
-        "--bind",
-        f"ctrl-x:change-prompt({prompt_for_mode('zoxide')})+reload({reload_cmd('zoxide')})",
+        f"ctrl-s:change-prompt({prompt_for_mode('sessions')})+reload({reload_cmd('sessions')})",
         "--bind",
         f"ctrl-f:change-prompt({prompt_for_mode('find')})+reload({reload_cmd('find')})",
         "--preview-window",
@@ -1197,7 +1190,7 @@ def last() -> int:
     return 0
 
 
-MODES = ["all", "default", "tmux", "zoxide", "find"]
+MODES = ["all", "sessions", "find"]
 
 
 def pause_for_error() -> None:
