@@ -780,13 +780,51 @@ def murmur_panes() -> list[dict] | None:
     return panes
 
 
-def tsesh_server() -> dict[str, str]:
-    """This process's tmux server, spelled as murmur's ``server`` field."""
+def conventional_tmux_dir() -> str | None:
+    """Where tmux keeps its named sockets, as murmur derives it."""
+    try:
+        base = os.path.realpath(os.environ.get("TMUX_TMPDIR") or "/tmp")
+        return os.path.join(base, f"tmux-{os.getuid()}")
+    except OSError:
+        return None
+
+
+def own_socket() -> str | None:
+    """The socket tsesh's own tmux calls reach, or None when unknown.
+
+    Same precedence as the calls themselves: the TSESH_TMUX_SOCKET_* test
+    overrides, then the socket in $TMUX (a bare tmux follows it), then the
+    default socket.
+    """
     if path := os.environ.get("TSESH_TMUX_SOCKET_PATH"):
-        return {"kind": "path", "value": path}
+        return os.path.realpath(path)
+    conventional = conventional_tmux_dir()
     if name := os.environ.get("TSESH_TMUX_SOCKET_NAME"):
-        return {"kind": "label", "value": name}
-    return {"kind": "default"}
+        return os.path.join(conventional, name) if conventional else None
+    if ambient := os.environ.get("TMUX"):
+        return os.path.realpath(ambient.split(",")[0])
+    return os.path.join(conventional, "default") if conventional else None
+
+
+def server_socket(server: object) -> str | None:
+    """The socket a murmur ``server`` value names; None if it is not understood."""
+    if not isinstance(server, dict):
+        return None
+    kind, value = server.get("kind"), server.get("value")
+    conventional = conventional_tmux_dir()
+    if kind == "default" and conventional:
+        return os.path.join(conventional, "default")
+    if kind == "label" and isinstance(value, str) and value and conventional:
+        return os.path.join(conventional, value)
+    if kind == "path" and isinstance(value, str) and value:
+        return os.path.realpath(value)
+    return None
+
+
+def is_own_server(server: object) -> bool:
+    """True only when SERVER provably is the server tsesh talks to."""
+    own, other = own_socket(), server_socket(server)
+    return own is not None and own == other
 
 
 def clean_field(value: object) -> str:
@@ -816,12 +854,11 @@ def agent_entries(
     panes[] already arrives most-urgent first; it is not re-sorted. Only panes
     on the tmux server tsesh talks to count toward a live session's row.
     """
-    here_server = tsesh_server()
     counts: dict[str, dict[AgentState, int]] = {}
     rows: list[Entry] = []
     for pane in panes:
         state = AgentState.parse(str(pane.get("render_state", "")))
-        is_here = bool(pane.get("local")) and pane.get("server") == here_server
+        is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
         session = clean_field(pane.get("session_name"))
         if state is not None and is_here and session in live:
             per = counts.setdefault(session, {})

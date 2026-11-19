@@ -1098,6 +1098,11 @@ class FakeMurmur(unittest.TestCase):
         patch = unittest.mock.patch.dict(os.environ, env)
         patch.start()
         self.addCleanup(patch.stop)
+        for var in ("TMUX", "TSESH_TMUX_SOCKET_PATH", "TSESH_TMUX_SOCKET_NAME"):
+            hide = unittest.mock.patch.dict(os.environ)
+            hide.start()
+            self.addCleanup(hide.stop)
+            os.environ.pop(var, None)
 
     def calls(self):
         return self.log.read_text().splitlines()
@@ -1217,6 +1222,68 @@ class MurmurRows(FakeMurmur):
         )
 
 
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class AmbientServer(FakeMurmur):
+    """tsesh with no socket override talks to the server $TMUX names."""
+
+    def test_here_follows_the_socket_in_tmux_env(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        sock = tmp / "s"
+        tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
+        subprocess.run([*tmux, "new-session", "-d", "-s", "origin"], check=True)
+        subprocess.run([*tmux, "new-session", "-d", "-s", "notes"], check=True)
+        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        pane = subprocess.run(
+            [*tmux, "list-panes", "-t", "notes", "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()[0]
+        ambient = {"kind": "path", "value": str(sock)}
+        self.install(
+            [
+                agent_pane(pane=pane, label="elsewhere", server={"kind": "default"}),
+                agent_pane(pane=pane, label="ambient", server=ambient),
+            ]
+        )
+        os.environ["TMUX"] = f"{sock},1,0"
+        cfg = config()
+        with (
+            unittest.mock.patch.object(tsesh, "load_config", lambda: cfg),
+            unittest.mock.patch.object(tsesh, "zoxide_paths", list),
+        ):
+            rows = {e.name: e for e in tsesh.build_entries("all")}
+        self.assertEqual(rows["ambient"].here, "1")
+        self.assertEqual(rows["elsewhere"].here, "")
+        payload = tsesh.EntryPayload.from_fzf_row(rows["ambient"].to_fzf_row())
+        old = tsesh.TmuxBackend.switch
+        tsesh.TmuxBackend.switch = lambda self, name, target=None: None
+        self.addCleanup(setattr, tsesh.TmuxBackend, "switch", old)
+        self.assertEqual(tsesh.connect_agent(payload), 0)
+        active = subprocess.run(
+            [*tmux, "display-message", "-p", "-t", "notes", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(active, pane)
+        # The default-server row must go through murmur, not touch this pane.
+        other = tsesh.EntryPayload.from_fzf_row(rows["elsewhere"].to_fzf_row())
+        tsesh.connect_agent(other)
+        self.assertIn("jump j1:abc", self.calls())
+
+    def test_unknown_identity_is_not_local(self):
+        self.install([agent_pane(server={"kind": "bogus"})])
+        cfg = config()
+        with (
+            unittest.mock.patch.object(tsesh, "load_config", lambda: cfg),
+            unittest.mock.patch.object(tsesh, "zoxide_paths", list),
+        ):
+            rows = [e for e in tsesh.build_entries("all") if e.kind == "agent"]
+        self.assertTrue(all(e.here == "" for e in rows))
+
+
 class AgentEnter(FakeMurmur):
     def pick(self, entry):
         old = tsesh.run_fzf
@@ -1226,8 +1293,13 @@ class AgentEnter(FakeMurmur):
         self.addCleanup(setattr, tsesh, "run_fzf", old)
         return tsesh.pick_and_connect()
 
-    def agent_entry(self, **over):
+    def agent_entry(self, socket=None, **over):
         self.install([agent_pane(**over)])
+        if socket:
+            override = {"TSESH_TMUX_SOCKET_PATH": str(socket)}
+            patch = unittest.mock.patch.dict(os.environ, override)
+            patch.start()
+            self.addCleanup(patch.stop)
         with unittest.mock.patch.object(
             tsesh.TmuxBackend, "snapshot", lambda self: {"notes": None}
         ):
@@ -1264,23 +1336,20 @@ class AgentEnter(FakeMurmur):
         target = panes[0]
         subprocess.run([*tmux, "select-window", "-t", "notes:0"], check=True)
         server = {"kind": "path", "value": str(sock)}
-        with unittest.mock.patch.dict(
-            os.environ, {"TSESH_TMUX_SOCKET_PATH": str(sock)}
+        entry = self.agent_entry(socket=sock, pane=target, server=server)
+        switched = []
+        with unittest.mock.patch.object(
+            tsesh.TmuxBackend,
+            "switch",
+            lambda self, name, target=None: switched.append((name, target)),
         ):
-            entry = self.agent_entry(pane=target, server=server)
-            switched = []
-            with unittest.mock.patch.object(
-                tsesh.TmuxBackend,
-                "switch",
-                lambda self, name, target=None: switched.append((name, target)),
-            ):
-                self.assertEqual(self.pick(entry), 0)
-            active = subprocess.run(
-                [*tmux, "display-message", "-p", "-t", "notes", "#{pane_id}"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
+            self.assertEqual(self.pick(entry), 0)
+        active = subprocess.run(
+            [*tmux, "display-message", "-p", "-t", "notes", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
         self.assertEqual(switched, [("notes", target)])
         self.assertEqual(active, target)
         self.assertFalse(any(c.startswith("jump") for c in self.calls()))
