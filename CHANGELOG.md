@@ -10,8 +10,9 @@ versions follow [SemVer](https://semver.org/).
 - Picker keymap reworked. Views are now `all` (`ctrl-a`), `sessions`
   (`ctrl-s`, pinned plus live) and `find` (`ctrl-f`). The pinned-only (`ctrl-c`),
   live-only (`ctrl-t`) and zoxide-only (`ctrl-x`) views are gone, so `ctrl-c`
-  aborts again. `--mode` takes `all`, `sessions` or `find`; the old values
-  `default`, `tmux` and `zoxide` are rejected.
+  aborts again (`ctrl-x` now kills a session, see Added). `--mode` takes
+  `all`, `sessions`, `find` or `agents`; the old values `default`, `tmux` and
+  `zoxide` are rejected.
 - The picker header now lists `tab`/`shift-tab` and `enter` too.
 
 ### Added
@@ -64,7 +65,13 @@ versions follow [SemVer](https://semver.org/).
 - Live sessions sort by last activity, newest first; pinned sessions keep
   their config order.
 
+- `tsesh --help` describes each command.
+
 ### Fixed
+
+- Sourcing `tsesh.tmux` again releases a key it bound before when its option
+  changed or became `""`; keys the user rebound are left alone. The bindings
+  work from a plugin directory with spaces, quotes, `#` or `$` in its path.
 
 - Picker rows escape backslashes, tabs and line breaks in every field, so a
   pinned path or startup command holding a tab no longer shifts the fields
@@ -87,6 +94,12 @@ versions follow [SemVer](https://semver.org/).
 - The picker lists sessions once when the server is up; the `find` fallback
   prunes blacklisted directories and treats blacklist entries literally.
 - `ruff check .` and `ruff format --check .` now cover `bin/tsesh`.
+
+### Development
+
+- ruff and ty are pinned in `pyproject.toml` and `uv.lock`; the gate runs
+  `uv run --frozen` ruff, ty and the tests. `TSESH_FAST=1` skips the live tmux
+  and fzf tests for a fast gate, and test runs leave no tmux servers behind.
 
 ### Documented
 

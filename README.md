@@ -39,6 +39,8 @@ run-shell ~/path/to/tmux-session-picker/tsesh.tmux
 | `T` | Session rooted at the current pane's directory | `@tsesh_key_root` |
 
 Set an option before TPM runs to move a key, or to `""` to leave it unbound.
+Sourcing `tsesh.tmux` again after a change releases the key it bound before
+(unless you have rebound that key yourself).
 [mu-crew/dotfiles](https://github.com/mu-crew/dotfiles) sets these for you from
 its own `@mu_crew_key_session_*` options, so configure them there if you use it.
 
@@ -62,7 +64,10 @@ Inside the picker:
 | `esc` / `ctrl-c` | Abort |
 
 `tsesh list|picker|pick-and-connect --mode` takes `all`, `sessions`, `find` or
-`agents`; `tsesh list --mode agents --crew` includes crew agents.
+`agents`; `tsesh list --mode agents --crew` includes crew agents. `tsesh last`
+says "tsesh: no previous session" in tmux when there is none, and
+`tsesh kill --kind=tmux --session-id='$N'` is `ctrl-x` from a shell.
+`tsesh --help` lists the commands.
 
 The first column marks where you are: `◆` is the session (and, in the agents
 view, the agent pane) of the client that opened the picker, and `◇` is a
@@ -78,7 +83,14 @@ session another client has attached.
 
 Optional. Without a config file tsesh lists live sessions, zoxide and the scan
 with sensible filters. Copy [examples/config.toml](examples/config.toml) to
-`~/.config/tsesh/config.toml` to pin sessions or change the filters.
+`~/.config/tsesh/config.toml` (`$XDG_CONFIG_HOME/tsesh/config.toml`, or the
+file `$TSESH_CONFIG` names) to pin sessions or change the filters.
+
+Other environment variables: `TSESH_MURMUR` names the murmur to run (default
+`murmur` on `PATH`) and `TSESH_MURMUR_TIMEOUT` its time limit in seconds
+(default 1). `TSESH_TMUX_SOCKET_PATH` / `TSESH_TMUX_SOCKET_NAME` point tsesh at
+another tmux server, and `TSESH_FAST=1` selects the fast test gate; both exist
+for the tests.
 
 ## Agent state
 
@@ -99,14 +111,15 @@ When the installed murmur supports it, tsesh also reads `murmur status --json
   as glyph and count) instead of only the strongest state;
 - agents that need attention (crashed, error, blocked, done) get their own rows
   at the top of the all view, in murmur's order. Enter on one selects its pane
-  and switches to it; agents on another host or tmux server go through
-  `murmur jump`.
+  and switches to it when the picker runs inside that agent's tmux server;
+  any other agent (another host or server, or a picker outside tmux) goes
+  through `murmur jump`.
 
 Agent rows need murmur's `jump` command too. A remote agent counts under the
 local session that holds its ssh attachment. tsesh acts on a pane itself only
 when it has proven the agent's tmux server is the one it talks to (the
-`TSESH_TMUX_SOCKET_*` variables, else the socket in `$TMUX`, else the default);
-everything else goes through `murmur jump`. A failed jump stays on screen for a
+`TSESH_TMUX_SOCKET_*` variables, else the socket in `$TMUX`, else the default,
+resolved once when tsesh starts); everything else goes through `murmur jump`. A failed jump stays on screen for a
 moment and shows as a tmux message.
 
 tsesh probes for this (`status --json --cached` succeeds with well-formed
@@ -157,15 +170,16 @@ before it lists live sessions, so a tmux that restores saved sessions at server
 start shows them. When creating a session, tsesh checks again after starting
 the server and switches to the session if it came back, instead of running
 `new-session`. A restored session therefore skips its configured `startup`
-and `split`: those run only when tsesh creates the session. Plain tmux has no snapshot: `start-server` exits at once and
-nothing changes.
+and `split`: those run only when tsesh creates the session. Plain tmux has no
+snapshot: `start-server` exits at once and nothing changes.
 
 ## Layout
 
 The picker fits its columns to the popup. The preview sits right of the list
 from 120 columns, below it from 80, and starts hidden under 80 (`ctrl-/` shows
 it). The name column grows from 16 to 40 cells with the list; a long name keeps
-both ends (`hacking/…/murmur`) and a long path keeps its end (`…/crew/murmur`).
+its last part whole and shortens the start (`hacking/cr…/murmur`), and a long
+path keeps its end (`…ng/crew/murmur`).
 On a narrow list the window counts go first, then the path. Widths are counted
 in terminal cells, so wide (CJK) names keep the columns aligned. Resizing the
 popup lays the list out again.
@@ -173,9 +187,9 @@ popup lays the list out again.
 ## Session names and directories
 
 Live sessions are listed most recently active first, after the pinned ones
-(which keep their config order). A live session's row counts its windows and panes (`3w 5p`) and shows its
-active pane's directory, with a dim `+N` when its windows sit in N other
-directories. A zoxide or scan directory that a live
+(which keep their config order). A live session's row counts its windows and
+panes (`3w 5p`) and shows its active pane's directory, with a dim `+N` when its
+windows sit in N other directories. A zoxide or scan directory that a live
 session is rooted at, or has a window in, is not listed again: that session's
 row stands for it. The preview of a live session lists every window (active
 marker, index, agent state, name, pane count, directory) above the active

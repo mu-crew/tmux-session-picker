@@ -2631,57 +2631,83 @@ def pause_for_error() -> None:
 
 def main(argv: Iterable[str] | None = None) -> int:
     try:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--version", action="version", version=f"tsesh {VERSION}")
-        sub = parser.add_subparsers(dest="cmd", required=True)
-
-        p_list = sub.add_parser("list")
-        p_list.add_argument(
-            "--mode",
-            choices=MODES,
-            default="all",
+        parser = argparse.ArgumentParser(
+            prog="tsesh",
+            description="tmux session picker: pinned and live sessions, zoxide,"
+            " a directory scan and, with murmur, coding agents.",
         )
+        parser.add_argument("--version", action="version", version=f"tsesh {VERSION}")
+        # fzf-action, fzf-enter and preview serve the picker's own bindings;
+        # they work but are left out of the list.
+        sub = parser.add_subparsers(
+            dest="cmd",
+            required=True,
+            metavar="{pick-and-connect,picker,list,connect,last,kill}",
+        )
+        views = "view: all (default), sessions, find or agents"
+
+        p_pick_connect = sub.add_parser(
+            "pick-and-connect",
+            help="open the picker and switch to the chosen row",
+            description="Open the picker; Enter switches to the session (creating"
+            " it in its directory if needed) or jumps to the agent.",
+        )
+        p_pick_connect.add_argument("--mode", choices=MODES, default="all", help=views)
+        p_pick_connect.add_argument("--query", default="", help="initial query")
+        p_pick_connect.add_argument(
+            "--client",
+            default="",
+            help="tmux client the picker was opened from; messages and the"
+            " switch go to it (the tsesh.tmux keys pass it)",
+        )
+
+        p_pick = sub.add_parser(
+            "picker", help="open the picker and print the chosen row"
+        )
+        p_pick.add_argument("--mode", choices=MODES, default="all", help=views)
+        p_pick.add_argument("--query", default="", help="initial query")
+
+        p_list = sub.add_parser("list", help="print the picker's rows")
+        p_list.add_argument("--mode", choices=MODES, default="all", help=views)
         p_list.add_argument(
             "--crew", action="store_true", help="include orchestrated agents"
         )
-
-        # fzf's transform binding for the view keys; not for people.
-        p_action = sub.add_parser("fzf-action")
-        p_action.add_argument("view", choices=[*MODES, "current"])
-        sub.add_parser("fzf-enter")
         p_list.add_argument("--prompt", default="", help=argparse.SUPPRESS)
 
-        p_kill = sub.add_parser("kill")
-        p_kill.add_argument("--kind", default="")
-        p_kill.add_argument("--session-id", default="")
-        p_kill.add_argument("--client", default="")
-
-        p_pick = sub.add_parser("picker")
-        p_pick.add_argument(
-            "--mode",
-            choices=MODES,
-            default="all",
+        p_connect = sub.add_parser(
+            "connect",
+            help="switch to a session or directory",
+            description="Switch to TARGET: a pinned or live session name, or a"
+            " directory (its live session, else a new one rooted there).",
         )
-        p_pick.add_argument("--query", default="")
-
-        p_pick_connect = sub.add_parser("pick-and-connect")
-        p_pick_connect.add_argument(
-            "--mode",
-            choices=MODES,
-            default="all",
-        )
-        p_pick_connect.add_argument("--query", default="")
-        p_pick_connect.add_argument(
-            "--client", default="", help="tmux client the picker was opened from"
-        )
-
-        p_connect = sub.add_parser("connect")
         p_connect.add_argument("target", nargs="?", default="")
         p_connect.add_argument(
             "--pane",
             default="",
-            help="resolve the target from this pane's cwd (see pane_cwd)",
+            help="use this tmux pane's directory as the target (prefix T)",
         )
+
+        sub.add_parser(
+            "last", help="switch to the previous session, if it is still live"
+        )
+
+        p_kill = sub.add_parser(
+            "kill",
+            help="kill a live session by id (ctrl-x in the picker)",
+            description="Kill the live session with tmux id --session-id ($N)."
+            " Only --kind=tmux or default rows count, and never the session"
+            " --client is in.",
+        )
+        p_kill.add_argument("--kind", default="", help="the row's kind")
+        p_kill.add_argument("--session-id", default="", help="tmux session id, $N")
+        p_kill.add_argument(
+            "--client", default="", help="tmux client the picker was opened from"
+        )
+
+        # fzf's transform bindings for the view keys and Enter; not for people.
+        p_action = sub.add_parser("fzf-action")
+        p_action.add_argument("view", choices=[*MODES, "current"])
+        sub.add_parser("fzf-enter")
 
         p_preview = sub.add_parser("preview")
         p_preview.add_argument("--kind", default="")
@@ -2692,8 +2718,6 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_preview.add_argument("--pane", default="")
         p_preview.add_argument("--here", default="")
         p_preview.add_argument("--socket", default="")
-
-        sub.add_parser("last")
 
         args = parser.parse_args(list(argv) if argv is not None else None)
         pin_own_server()
