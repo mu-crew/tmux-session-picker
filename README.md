@@ -124,7 +124,8 @@ the agent's name, its workstream (or tmux session) when that differs from the
 name, a host column (`here` or `→ host`) when any agent is remote, and the age
 of its last update. The prompt counts the shown agents per state.
 
-When a peer needs a new ssh session, murmur's notice is the first header line.
+When a peer needs a new ssh session, murmur's notice is the first header line,
+with the `ssh` command that lets murmur reach it again.
 An empty view says so ("No agents", or how many crew agents are hidden) and
 stays open until `esc`. Without murmur, or with one too old for the view, the
 header says that instead.

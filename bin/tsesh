@@ -955,12 +955,14 @@ def valid_pane(pane: object) -> bool:
 
 
 def valid_peer(peer: object) -> bool:
-    """A peer as the session notice reads it; fetched_at is optional."""
+    """A peer as the session notice reads it; fetched_at and target are
+    optional (target is the ssh target, which can differ from the name)."""
     return (
         isinstance(peer, dict)
         and _is_str(peer.get("name"))
         and _is_bool(peer.get("needs_session"))
         and _is_time(peer.get("fetched_at"))
+        and _is_str_or_none(peer.get("target"))
     )
 
 
@@ -1289,21 +1291,44 @@ def agent_view_entries(
     return rows, columns, counts
 
 
+# murmur's ControlPath: warming a socket here is what lets it collect again.
+MURMUR_CONTROL_PATH = "~/.ssh/control/%r@%h:%p"
+
+
 def session_notice(peers: list[dict]) -> str:
-    """murmur's notice for peers that need an interactive session, or ""."""
+    """murmur's notice for peers that need an interactive session, or "".
+
+    As murmur words it (paint.ts sessionNotice): up to three gated peers,
+    oldest first, when the oldest was last reached, and the command that warms
+    an ssh socket for it, built from its ssh target (a peer name may differ).
+    """
     gated = sorted(
         (p for p in peers if p["needs_session"]),
         key=lambda p: p.get("fetched_at") or 0,
     )
     if not gated:
         return ""
+    oldest = gated[0]
     names = ", ".join(clean_field(p["name"]) for p in gated[:3])
-    fetched = gated[0].get("fetched_at")
-    seen = "never" if fetched is None else age_text(fetched)
-    text = (
-        f"{STATE_GLYPH[AgentState.blocked]} {names}: re-auth needed (last seen {seen})"
+    fetched = oldest.get("fetched_at")
+    if fetched is None:
+        seen = "never"
+    elif time.time() * 1000 - fetched < 60_000:
+        seen = "just now"
+    else:
+        seen = age_text(fetched)
+    target = clean_field(oldest.get("target") or oldest["name"])
+    command = f"ssh -MNf -S {MURMUR_CONTROL_PATH} {target}"
+    peach = CATPPUCCIN["peach"]
+    return (
+        ansi_style(
+            f"{STATE_GLYPH[AgentState.blocked]} {names}: re-auth needed",
+            fg=peach,
+            bold=True,
+        )
+        + ansi_style(f" (last seen {seen}) \u2014 ", fg=peach)
+        + ansi_style(command, fg=peach, bold=True)
     )
-    return ansi_style(text, fg=CATPPUCCIN["peach"], bold=True)
 
 
 @dataclass(frozen=True)

@@ -447,6 +447,48 @@ class SessionNotice(Harness):
                 self.assertIn("peer-a", first)
                 self.assertNotIn("peer-b", first)
 
+    def test_notice_names_the_oldest_peer_target_and_the_command(self):
+        now = int(time.time() * 1000)
+        peers = [
+            {
+                "name": "newer",
+                "target": "me@newer.invalid",
+                "needs_session": True,
+                "fetched_at": now - 7_200_000,
+            },
+            {
+                "name": "build-alias",
+                "target": "builder@peer.invalid",
+                "needs_session": True,
+                "fetched_at": None,
+            },
+        ]
+        self.snapshot([self.own()], peers=peers)
+        self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
+        first = plain(self.steps()[0]["header"].splitlines()[0])
+        self.assertEqual(
+            first,
+            f"{G[S.blocked]} build-alias, newer: re-auth needed (last seen never)"
+            " \u2014 ssh -MNf -S ~/.ssh/control/%r@%h:%p builder@peer.invalid",
+        )
+
+    def test_notice_age_and_target_fallback(self):
+        now = int(time.time() * 1000)
+        for fetched, seen in ((now - 5_000, "just now"), (now - 180_000, "3m")):
+            with self.subTest(seen=seen):
+                peer = {"name": "peer-a", "needs_session": True, "fetched_at": fetched}
+                self.snapshot([self.own()], peers=[peer])
+                self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
+                first = plain(self.steps()[0]["header"].splitlines()[0])
+                self.assertIn(f"(last seen {seen})", first)
+                self.assertTrue(first.endswith(" peer-a"), first)
+
+    def test_ill_typed_target_rejects_the_snapshot(self):
+        peer = {"name": "p", "target": 7, "needs_session": True, "fetched_at": None}
+        self.snapshot([self.own()], peers=[peer])
+        self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
+        self.assertIn("murmur too old", plain(self.steps()[0]["header"]))
+
     def test_no_notice_without_a_gated_peer(self):
         self.snapshot([self.own()], peers=[{"name": "peer-a", "needs_session": False}])
         self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
