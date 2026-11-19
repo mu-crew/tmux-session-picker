@@ -1056,6 +1056,16 @@ def murmur_can_jump(exe: str) -> bool:
     return probe.returncode == 0
 
 
+def named_socket(name: str) -> str | None:
+    """The physical socket a tmux -L NAME reaches now.
+
+    Resolved like a -S path: a symlink in tmux's socket directory is an alias
+    that can be retargeted after a proof is made (see pinned_server).
+    """
+    conventional = conventional_tmux_dir()
+    return os.path.realpath(os.path.join(conventional, name)) if conventional else None
+
+
 def conventional_tmux_dir() -> str | None:
     """Where tmux keeps its named sockets, as murmur derives it."""
     try:
@@ -1074,12 +1084,11 @@ def own_socket() -> str | None:
     """
     if path := os.environ.get("TSESH_TMUX_SOCKET_PATH"):
         return os.path.realpath(path)
-    conventional = conventional_tmux_dir()
     if name := os.environ.get("TSESH_TMUX_SOCKET_NAME"):
-        return os.path.join(conventional, name) if conventional else None
+        return named_socket(name)
     if ambient := os.environ.get("TMUX"):
         return os.path.realpath(ambient.split(",")[0])
-    return os.path.join(conventional, "default") if conventional else None
+    return named_socket("default")
 
 
 def server_socket(server: object) -> str | None:
@@ -1087,11 +1096,10 @@ def server_socket(server: object) -> str | None:
     if not isinstance(server, dict):
         return None
     kind, value = server.get("kind"), server.get("value")
-    conventional = conventional_tmux_dir()
-    if kind == "default" and conventional:
-        return os.path.join(conventional, "default")
-    if kind == "label" and isinstance(value, str) and value and conventional:
-        return os.path.join(conventional, value)
+    if kind == "default":
+        return named_socket("default")
+    if kind == "label" and isinstance(value, str) and value:
+        return named_socket(value)
     if kind == "path" and isinstance(value, str) and value:
         return os.path.realpath(value)
     return None
@@ -1132,8 +1140,7 @@ def murmur_saw_own_server() -> bool:
     if ambient := os.environ.get("TMUX"):
         murmur_socket = os.path.realpath(ambient.split(",")[0])
     else:
-        conventional = conventional_tmux_dir()
-        murmur_socket = os.path.join(conventional, "default") if conventional else ""
+        murmur_socket = named_socket("default") or ""
     return bool(murmur_socket) and own_socket() == murmur_socket
 
 

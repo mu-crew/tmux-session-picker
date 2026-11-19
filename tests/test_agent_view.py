@@ -581,3 +581,79 @@ class RealFzf(Harness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class NamedSocketAlias(Harness):
+    """A -L name is an alias too: the proof pins the socket it resolves to."""
+
+    def test_preview_after_retargeting_a_named_socket(self):
+        tmpdir = self.tmp / "tmuxdir"
+        tmpdir.mkdir()
+        sockdir = Path(os.path.realpath(tmpdir)) / f"tmux-{os.getuid()}"
+        env = {**self.env, "TMUX_TMPDIR": str(tmpdir)}
+
+        def server(sock, text):
+            subprocess.run(
+                [
+                    "tmux",
+                    "-f",
+                    "/dev/null",
+                    "-S",
+                    str(sock),
+                    "new-session",
+                    "-d",
+                    "-s",
+                    "srv",
+                    f"echo {text}; sleep 60",
+                ],
+                check=True,
+            )
+            self.addCleanup(self.tmux, "kill-server", sock=sock)
+
+        sockdir.mkdir(mode=0o700)
+        physical_a, physical_b = self.tmp / "a-sock", self.tmp / "b-sock"
+        server(physical_a, "A_CONTENT")
+        server(physical_b, "B_CONTENT")
+        alias = sockdir / "alias"
+        alias.symlink_to(physical_a)
+        time.sleep(0.4)
+        self.snapshot(
+            [
+                agent_pane(
+                    pane="%0",
+                    session_name="srv",
+                    server={"kind": "label", "value": "alias"},
+                )
+            ]
+        )
+        self.env = env
+        out = self.tsesh("list", "--mode", "agents", TSESH_TMUX_SOCKET_NAME="alias")
+        row = out.stdout.splitlines()[0].split("\t")
+        fields = dict(zip(tsesh.FZF_ROW_FIELDS, row, strict=True))
+        self.assertEqual(fields["here"], "1")
+
+        def preview():
+            return self.tsesh(
+                "preview",
+                "--kind",
+                "agent",
+                "--session-name",
+                "srv",
+                "--host",
+                "box",
+                "--pane",
+                "%0",
+                "--here",
+                "1",
+                "--socket",
+                fields["socket"],
+                TSESH_TMUX_SOCKET_NAME="alias",
+            ).stdout
+
+        self.assertIn("A_CONTENT", preview())
+        alias.unlink()
+        alias.symlink_to(physical_b)
+        shown = preview()
+        self.assertNotIn("B_CONTENT", shown)
+        self.assertIn("host:", shown)
