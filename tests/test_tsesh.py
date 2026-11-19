@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -1500,9 +1501,16 @@ class StaleSocketAlias(FakeMurmur):
                 check=True,
             )
             self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
-        import time
-
-        time.sleep(0.4)
+            for _ in range(300):  # until the pane has printed its marker
+                shown = subprocess.run(
+                    [*tmux, "capture-pane", "-p", "-t", f"srv{name}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout
+                if f"SERVER_{name}" in shown:
+                    break
+                time.sleep(0.1)
         self.alias = self.tmp / "alias"
         self.alias.symlink_to(self.dirs["A"])
         cfg = config()

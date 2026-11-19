@@ -652,6 +652,11 @@ class NamedSocketAlias(Harness):
                 check=True,
             )
             self.addCleanup(self.tmux, "kill-server", sock=sock)
+            for _ in range(300):  # until the pane has printed it
+                if text in self.tmux("capture-pane", "-p", "-t", "srv", sock=sock):
+                    return
+                time.sleep(0.1)
+            self.fail(f"{text} never shown")
 
         sockdir.mkdir(mode=0o700)
         physical_a, physical_b = self.tmp / "a-sock", self.tmp / "b-sock"
@@ -659,7 +664,6 @@ class NamedSocketAlias(Harness):
         server(physical_b, "B_CONTENT")
         alias = sockdir / "alias"
         alias.symlink_to(physical_a)
-        time.sleep(0.4)
         self.snapshot(
             [
                 agent_pane(
@@ -751,6 +755,16 @@ class PluginPathQuoting(Harness):
             check=True,
         )
 
+    def wait_for_cwd(self, target, path):
+        """Until the pane's shell has run the cd: shell startup time varies."""
+        want = os.path.realpath(path)
+        for _ in range(300):
+            now = self.tmux("display", "-p", "-t", target, "#{pane_current_path}")
+            if os.path.realpath(now.strip()) == want:
+                return
+            time.sleep(0.1)
+        self.fail(f"pane never reached {want}: {now!r}")
+
     def host_screen(self, host):
         return self.tmux("capture-pane", "-p", "-t", "h:", sock=host)
 
@@ -778,7 +792,7 @@ class PluginPathQuoting(Harness):
                 cwd = self.tmp / f"cwd{len(name)}"
                 cwd.mkdir()
                 self.tmux("send-keys", "-t", "notes:", f"cd {cwd}", "Enter")
-                time.sleep(0.5)
+                self.wait_for_cwd("notes:", cwd)
                 self.tmux("send-keys", "-t", "h:", "C-b", "T", sock=host)
                 for _ in range(50):
                     if f"cwd{len(name)}" in self.tmux("list-sessions"):
