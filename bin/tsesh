@@ -25,10 +25,12 @@ class AgentState(enum.IntEnum):
     Without murmur the option is unset and every row has no state.
     """
 
+    waiting = 1
     working = 2
     done = 3
     blocked = 4
-    crashed = 5
+    error = 5
+    crashed = 6
 
     @classmethod
     def parse(cls, raw: str) -> AgentState | None:
@@ -42,13 +44,15 @@ class AgentState(enum.IntEnum):
 # Nerd Font glyphs, the same shapes murmur's dash uses per state.
 STATE_GLYPH: dict[AgentState, str] = {
     AgentState.crashed: "\uf057",  # fa-times-circle
+    AgentState.error: "\uf071",  # fa-exclamation-triangle
     AgentState.blocked: "\uf075",  # fa-comment
     AgentState.done: "\uf058",  # fa-check-circle
     AgentState.working: "\uf04b",  # fa-play
+    AgentState.waiting: "\uf252",  # fa-hourglass-half
 }
 # THEME END: tsesh-state-glyphs
 
-ATTENTION_STATES = frozenset({AgentState.blocked, AgentState.crashed})
+ATTENTION_STATES = frozenset({AgentState.blocked, AgentState.error, AgentState.crashed})
 
 
 def tmux_socket_args() -> tuple[str, ...]:
@@ -174,6 +178,7 @@ KIND_ICON = {
 # THEME BEGIN: tsesh-palette
 CATPPUCCIN = {
     "red": "#f38ba8",
+    "maroon": "#eba0ac",
     "peach": "#fab387",
     "teal": "#94e2d5",
     "sky": "#89dceb",
@@ -274,6 +279,13 @@ class Entry:
             return ansi_style(
                 text,
                 fg=CATPPUCCIN["red"],
+                bg=CATPPUCCIN["surface0"],
+                bold=True,
+            )
+        if self.worst_state is AgentState.error:
+            return ansi_style(
+                text,
+                fg=CATPPUCCIN["maroon"],
                 bg=CATPPUCCIN["surface0"],
                 bold=True,
             )
@@ -798,7 +810,7 @@ def tmux_session_preview(name: str) -> int:
         if len(parts) != 5:
             continue
         window_index, window_active, window_name, _window_panes, window_state = parts
-        if window_state in ("blocked", "crashed"):
+        if AgentState.parse(window_state) in ATTENTION_STATES:
             attention_total += 1
         if window_active == "1":
             active_window_index = window_index

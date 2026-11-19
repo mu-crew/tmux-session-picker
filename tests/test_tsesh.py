@@ -69,6 +69,7 @@ class RowRendering(unittest.TestCase):
             ).visible_text()
 
         self.assertIn(fg_seq("red"), row(State.crashed))
+        self.assertIn(fg_seq("maroon"), row(State.error))
         self.assertIn(fg_seq("peach"), row(State.blocked))
         self.assertIn(fg_seq("teal"), row(State.done))
         self.assertIn(fg_seq("sky"), row(State.working))
@@ -112,6 +113,15 @@ class RowRendering(unittest.TestCase):
                 f"CATPPUCCIN['{key}']"
             )
             self.assertGreater(uses, 0, key)
+
+    def test_murmur_states_parse_and_order(self):
+        for raw in ("crashed", "error", "blocked", "done", "working", "waiting"):
+            self.assertIsNotNone(State.parse(raw), raw)
+        self.assertGreater(State.crashed, State.error)
+        self.assertGreater(State.error, State.blocked)
+        self.assertGreater(State.working, State.waiting)
+        self.assertIn(State.error, tsesh.ATTENTION_STATES)
+        self.assertNotIn(State.waiting, tsesh.ATTENTION_STATES)
 
 
 class RowRoundTrip(unittest.TestCase):
