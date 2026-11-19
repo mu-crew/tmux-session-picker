@@ -132,6 +132,13 @@ class Header(unittest.TestCase):
             self.assertIn(key, legend)
 
 
+class Docs(unittest.TestCase):
+    def test_readme_documents_every_state(self):
+        readme = (TSESH.parent.parent / "README.md").read_text(encoding="utf-8")
+        for state in State:
+            self.assertIn(f"`{state.name}`", readme)
+
+
 class RowRoundTrip(unittest.TestCase):
     def test_payload_survives(self):
         entry = tsesh.Entry(

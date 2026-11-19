@@ -5,8 +5,8 @@ sessions, zoxide directories and a directory scan. Pick a row and tsesh
 switches to that session, creating it in the directory first if needed.
 
 If [murmur](https://github.com/mu-crew/murmur) runs on the machine, each
-session also shows its coding agents' state: crashed, blocked, done or
-working. Without murmur that column is blank and everything else works.
+session also shows its coding agents' state: crashed, error, blocked, done,
+working or waiting. Without murmur that column is blank and everything else works.
 
 ## Install
 
@@ -68,8 +68,8 @@ with sensible filters. Copy [examples/config.toml](examples/config.toml) to
 
 tsesh reads one tmux option per session, `@murmur_session_state`, in a single
 `list-sessions` call. murmur keeps it at the strongest state among the
-session's agents. Any tool can set it; the values are `crashed`, `blocked`,
-`done` and `working`.
+session's agents. Any tool can set it; the values are `crashed`, `error`,
+`blocked`, `done`, `working` and `waiting`.
 
 ## Server lifetime
 
