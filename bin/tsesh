@@ -984,6 +984,21 @@ def age_text(updated_ms: object, now_ms: float | None = None) -> str:
 ATTENTION_ROW_STATES = {"crashed", "error", "blocked", "done"}
 
 
+def murmur_saw_own_server() -> bool:
+    """Whether murmur's ambient tmux is the server tsesh queries.
+
+    murmur computes ``attached_pane`` with a bare tmux, which follows $TMUX (or
+    the default socket); the TSESH_TMUX_SOCKET_* overrides apply to tsesh only.
+    A pane id seen behind an override is not evidence of the pane murmur meant.
+    """
+    if ambient := os.environ.get("TMUX"):
+        murmur_socket = os.path.realpath(ambient.split(",")[0])
+    else:
+        conventional = conventional_tmux_dir()
+        murmur_socket = os.path.join(conventional, "default") if conventional else ""
+    return bool(murmur_socket) and own_socket() == murmur_socket
+
+
 def attached_session(pane_id: str) -> str | None:
     """The session of a local pane on tsesh's own server, or None.
 
@@ -1020,7 +1035,11 @@ def agent_entries(
         is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
         session = clean_field(pane.get("session_name"))
         counted = session if is_here else None
-        if not pane.get("local") and pane.get("attached_pane"):
+        if (
+            not pane.get("local")
+            and pane.get("attached_pane")
+            and murmur_saw_own_server()
+        ):
             # A remote agent counts under the local session holding its ssh pane.
             attached = str(pane["attached_pane"])
             if attached not in attached_cache:

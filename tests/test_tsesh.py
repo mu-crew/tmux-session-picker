@@ -1426,7 +1426,7 @@ class RemoteAttachments(FakeMurmur):
 
     def entries(self, panes):
         self.install(panes)
-        os.environ["TSESH_TMUX_SOCKET_PATH"] = str(self.sock)
+        os.environ["TMUX"] = f"{self.sock},1,0"  # murmur's ambient server
         return tsesh.build_entries("all")
 
     def remote(self, **over):
@@ -1444,6 +1444,22 @@ class RemoteAttachments(FakeMurmur):
         self.assertEqual(lalala.agent_counts, ((State.done, 1),))
         row = next(e for e in entries if e.kind == "agent")
         self.assertEqual(row.here, "")  # never a local capture/select target
+
+    def test_override_to_another_server_does_not_inherit_the_attachment(self):
+        other = self.tmp / "other"
+        other_tmux = ["tmux", "-f", "/dev/null", "-S", str(other)]
+        subprocess.run(
+            [*other_tmux, "new-session", "-d", "-s", "different"], check=True
+        )
+        self.addCleanup(
+            subprocess.run, [*other_tmux, "kill-server"], capture_output=True
+        )
+        self.install([self.remote(attached_pane=self.pane)])
+        os.environ["TMUX"] = f"{self.sock},1,0"  # what murmur saw
+        os.environ["TSESH_TMUX_SOCKET_PATH"] = str(other)  # what tsesh queries
+        entries = tsesh.build_entries("all")
+        different = next(e for e in entries if e.name == "different")
+        self.assertEqual(different.agent_counts, ())
 
     def test_unattached_or_unproven_remote_agents_do_not_count(self):
         for attached in (None, "%9999"):
