@@ -158,7 +158,7 @@ class Version(unittest.TestCase):
         self.assertIn("## [Unreleased]", log)
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class PopupBinding(unittest.TestCase):
     def test_picker_key_passes_the_invoking_client(self):
         tmp = Path(tempfile.mkdtemp())
@@ -166,7 +166,7 @@ class PopupBinding(unittest.TestCase):
         sock = tmp / "s"
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
         subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
-        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        self.addCleanup(support.kill_server, tmux)
         env = dict(os.environ, TMUX=f"{sock},1,0")
         subprocess.run(
             ["bash", str(TSESH.parent.parent / "tsesh.tmux")], env=env, check=True
@@ -501,7 +501,7 @@ class PickerKeys(unittest.TestCase):
             self.assertNotIn(gone, binds)
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class LiveTmux(unittest.TestCase):
     """live_sessions against a real, isolated tmux server."""
 
@@ -515,7 +515,7 @@ class LiveTmux(unittest.TestCase):
         )
         pins.start()
         self.addCleanup(pins.stop)
-        self.addCleanup(self.tmux, "kill-server")
+        self.addCleanup(support.kill_server, ["tmux", "-L", self.socket])
         self.tmux("new-session", "-d", "-s", "busy")
         self.tmux("new-session", "-d", "-s", "quiet")
         self.tmux("new-session", "-d", "-s", "odd")
@@ -563,7 +563,7 @@ class LiveTmux(unittest.TestCase):
     def test_kill_refuses_the_clients_current_session_with_a_message(self):
         import pty
 
-        self.addCleanup(self.tmux, "kill-server")
+        self.addCleanup(support.kill_server, ["tmux", "-L", self.socket])
         pid, fd = pty.fork()
         if pid == 0:
             os.execvp("tmux", ["tmux", "-L", self.socket, "attach", "-t", "busy"])
@@ -636,7 +636,7 @@ class LiveTmux(unittest.TestCase):
         self.assertEqual(tsesh.TmuxBackend().live_sessions(), {})
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class CreateWithDefaultBaseIndex(unittest.TestCase):
     """create() on a real isolated server whose indexes start at 0."""
 
@@ -645,7 +645,7 @@ class CreateWithDefaultBaseIndex(unittest.TestCase):
         os.environ["TSESH_TMUX_SOCKET_PATH"] = str(self.sock)
         self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_PATH", None)
         self.addCleanup(shutil.rmtree, self.sock.parent, True)
-        self.addCleanup(self.tmux, "kill-server")
+        self.addCleanup(support.kill_server, ["tmux", "-S", str(self.sock)])
         # Start the server here with no config so base-index stays 0.
         self.tmux("new-session", "-d", "-s", "keep")
         old = tsesh.start_server_in_own_scope
@@ -666,7 +666,7 @@ class CreateWithDefaultBaseIndex(unittest.TestCase):
         self.assertEqual(len(panes.stdout.split()), 2)
 
 
-@unittest.skipUnless(shutil.which("tmux") and shutil.which("fzf"), "needs tmux+fzf")
+@support.live("tmux", "fzf")
 class KillInPopup(unittest.TestCase):
     """ctrl-x in the real picker popup, typed on an attached client."""
 
@@ -701,7 +701,7 @@ class KillInPopup(unittest.TestCase):
         )
         self.env.pop("TMUX", None)
         self.tmux = ["tmux", "-f", "/dev/null", "-S", str(tmp / "s")]
-        self.addCleanup(self.run_tmux, "kill-server")
+        self.addCleanup(support.kill_server, self.tmux)
         # origin is $0; a session literally named "$0" must not alias it.
         for name in ("origin", "$0", " spaced ", "spaced", "-flag", "dot.name"):
             self.run_tmux("new-session", "-d", "-s", name, "-c", str(tmp))
@@ -845,7 +845,7 @@ class KillInPopup(unittest.TestCase):
         self.assertIn("origin", self.sessions())
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class NameCollision(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()).resolve()
@@ -871,7 +871,7 @@ class NameCollision(unittest.TestCase):
         )
 
     def _kill(self):
-        self.run_tmux("kill-server")
+        support.kill_server(["tmux", "-S", str(self.sock)])
 
     def test_distinct_dirs_with_one_sanitized_name_get_distinct_sessions(self):
         a, b = self.tmp / "a.b", self.tmp / "a_b"
@@ -1240,7 +1240,7 @@ class PickerStartsServer(unittest.TestCase):
         self.assertEqual(fake.calls, [])
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class PickerListsOnce(unittest.TestCase):
     def test_running_server_is_listed_once_before_fzf(self):
         tmp = Path(tempfile.mkdtemp())
@@ -1250,7 +1250,7 @@ class PickerListsOnce(unittest.TestCase):
         self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_PATH", None)
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
         subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
-        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        self.addCleanup(support.kill_server, tmux)
         calls = []
         real = tsesh.tmux_cmd
 
@@ -1270,7 +1270,7 @@ class PickerListsOnce(unittest.TestCase):
         self.assertEqual(len(listings), 1, calls)
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class PlainTmuxNoRestore(unittest.TestCase):
     """Real tmux has no snapshot: start-server exits, create still works."""
 
@@ -1283,12 +1283,7 @@ class PlainTmuxNoRestore(unittest.TestCase):
             )
         os.environ["TSESH_TMUX_SOCKET_NAME"] = self.socket
         self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_NAME", None)
-        self.addCleanup(
-            subprocess.run,
-            ["tmux", "-L", self.socket, "kill-server"],
-            check=False,
-            capture_output=True,
-        )
+        self.addCleanup(support.kill_server, ["tmux", "-L", self.socket])
 
     def test_ensure_server_leaves_no_sessions(self):
         tsesh.TmuxBackend().ensure_server()
@@ -1336,7 +1331,7 @@ def own_cgroup() -> str:
         return ""
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 @unittest.skipUnless(shutil.which("systemd-run"), "needs systemd-run")
 @unittest.skipUnless("/user@" in own_cgroup(), "needs to run under a user@ unit")
 class ServerScope(unittest.TestCase):
@@ -1354,12 +1349,7 @@ class ServerScope(unittest.TestCase):
             )
         os.environ["TSESH_TMUX_SOCKET_NAME"] = self.socket
         self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_NAME", None)
-        self.addCleanup(
-            subprocess.run,
-            ["tmux", "-L", self.socket, "kill-server"],
-            check=False,
-            capture_output=True,
-        )
+        self.addCleanup(support.kill_server, ["tmux", "-L", self.socket])
 
     def server_cgroup(self) -> str:
         pid = tsesh.tmux_cmd("display-message", "-p", "#{pid}").stdout.strip()
@@ -1728,7 +1718,7 @@ class MurmurRows(FakeMurmur):
         )
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class RemoteAttachments(FakeMurmur):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -1736,9 +1726,7 @@ class RemoteAttachments(FakeMurmur):
         self.sock = self.tmp / "s"
         self.tmux = ["tmux", "-f", "/dev/null", "-S", str(self.sock)]
         subprocess.run([*self.tmux, "new-session", "-d", "-s", "lalala"], check=True)
-        self.addCleanup(
-            subprocess.run, [*self.tmux, "kill-server"], capture_output=True
-        )
+        self.addCleanup(support.kill_server, self.tmux)
         self.pane = subprocess.run(
             [*self.tmux, "list-panes", "-t", "lalala", "-F", "#{pane_id}"],
             capture_output=True,
@@ -1780,9 +1768,7 @@ class RemoteAttachments(FakeMurmur):
         subprocess.run(
             [*other_tmux, "new-session", "-d", "-s", "different"], check=True
         )
-        self.addCleanup(
-            subprocess.run, [*other_tmux, "kill-server"], capture_output=True
-        )
+        self.addCleanup(support.kill_server, other_tmux)
         self.install([self.remote(attached_pane=self.pane)])
         os.environ["TMUX"] = f"{self.sock},1,0"  # what murmur saw
         os.environ["TSESH_TMUX_SOCKET_PATH"] = str(other)  # what tsesh queries
@@ -1798,7 +1784,7 @@ class RemoteAttachments(FakeMurmur):
                 self.assertEqual(lalala.agent_counts, ())
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class StaleSocketAlias(FakeMurmur):
     """The proof that a row is on tsesh's server must hold at the operation."""
 
@@ -1822,7 +1808,7 @@ class StaleSocketAlias(FakeMurmur):
                 ],
                 check=True,
             )
-            self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+            self.addCleanup(support.kill_server, tmux)
 
             def shown(tmux=tmux, name=name):  # until the pane prints its marker
                 return (
@@ -1902,7 +1888,7 @@ class StaleSocketAlias(FakeMurmur):
         self.assertIn("jump j1:abc", self.calls())
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class AmbientServer(FakeMurmur):
     """tsesh with no socket override talks to the server $TMUX names."""
 
@@ -1911,7 +1897,7 @@ class AmbientServer(FakeMurmur):
         self.addCleanup(shutil.rmtree, tmp, True)
         sock = tmp / "s"
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
-        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        self.addCleanup(support.kill_server, tmux)
         subprocess.run([*tmux, "new-session", "-d", "-s", "origin"], check=True)
         subprocess.run([*tmux, "new-session", "-d", "-s", "notes"], check=True)
         pane = subprocess.run(
@@ -2043,13 +2029,13 @@ class AgentEnter(FakeMurmur):
         self.assertIn("jump", err.getvalue())
         self.assertEqual(paused, [1])
 
-    @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+    @support.live("tmux")
     def test_local_agent_selects_its_pane_then_switches(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         sock = tmp / "s"
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
-        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        self.addCleanup(support.kill_server, tmux)
         subprocess.run([*tmux, "new-session", "-d", "-s", "notes"], check=True)
         subprocess.run([*tmux, "new-window", "-t", "notes:", "-n", "two"], check=True)
         subprocess.run([*tmux, "split-window", "-t", "notes:two"], check=True)

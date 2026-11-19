@@ -10,6 +10,7 @@ Clients and pane processes die with their server.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import os
 import shutil
 import signal
@@ -17,10 +18,26 @@ import stat
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+import unittest
+from collections.abc import Callable, Sequence
 from typing import TypeVar
 
 T = TypeVar("T")
+
+# TSESH_FAST=1: the fast gate. Skips every test that starts a real tmux
+# server or client, or fzf.
+FAST = os.environ.get("TSESH_FAST") == "1"
+
+
+def live(*tools: str) -> Callable[[T], T]:
+    """Mark a test (class) that starts real TOOLS (tmux, fzf)."""
+    if FAST:
+        return unittest.skip("TSESH_FAST=1 skips tests that start tmux or fzf")
+    missing = [t for t in tools if not shutil.which(t)]
+    if missing:
+        return unittest.skip(f"needs {' and '.join(missing)}")
+    return lambda test: test
+
 
 # Upper bound for any wait on state. Generous: a loaded machine (load average
 # far above the core count) can take seconds to start a shell or a Python.
@@ -30,6 +47,10 @@ WAIT = 60.0
 RUN_DIR = tempfile.mkdtemp(prefix="ts", dir="/tmp")
 tempfile.tempdir = RUN_DIR
 os.environ["TMUX_TMPDIR"] = RUN_DIR
+# Never the tmux server the suite happens to run in: a test that wants $TMUX
+# sets it to its own isolated server.
+for _var in ("TMUX", "TMUX_PANE"):
+    os.environ.pop(_var, None)
 # The picker gives murmur 1 s by default; a fake murmur under load needs more.
 os.environ["TSESH_MURMUR_TIMEOUT"] = "30"
 
@@ -58,14 +79,29 @@ def test_sockets() -> list[str]:
     return found
 
 
+def kill_server(tmux: Sequence[str]) -> None:
+    """Kill the tmux server TMUX (an argv prefix such as ``tmux -S path``)
+    and everything its panes run.
+
+    kill-server hangs up the panes, but a shell can outlive that; each pane's
+    process group is killed outright as well.
+    """
+    panes = subprocess.run(
+        [*tmux, "list-panes", "-a", "-F", "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    ).stdout.split()
+    subprocess.run([*tmux, "kill-server"], capture_output=True, timeout=30, check=False)
+    for pid in panes:
+        with contextlib.suppress(OSError, ValueError):
+            os.killpg(int(pid), signal.SIGKILL)
+
+
 def kill_test_servers() -> None:
     for socket in test_sockets():
-        subprocess.run(
-            ["tmux", "-S", socket, "kill-server"],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        kill_server(["tmux", "-S", socket])
     shutil.rmtree(RUN_DIR, ignore_errors=True)
 
 

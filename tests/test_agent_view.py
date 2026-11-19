@@ -28,7 +28,7 @@ def plain(text: str) -> str:
     return ANSI.sub("", text)
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class Harness(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -45,7 +45,7 @@ class Harness(unittest.TestCase):
         self.murmur.chmod(0o755)
         self.sock = self.tmp / "s"
         self.tmux("new-session", "-d", "-s", "notes")
-        self.addCleanup(self.tmux, "kill-server")
+        self.addCleanup(self.kill)
         self.pane = self.tmux("list-panes", "-t", "notes", "-F", "#{pane_id}").split()[
             0
         ]
@@ -113,13 +113,16 @@ class Harness(unittest.TestCase):
             f"env -u TMUX tmux -S {self.sock} attach -t {session}",
             sock=host,
         )
-        self.addCleanup(self.tmux, "kill-server", sock=host)
+        self.addCleanup(self.kill, host)
         tty = self.tmux("list-panes", "-F", "#{pane_tty}", sock=host).strip()
         if support.wait_until(
             lambda: tty in self.tmux("list-clients", "-F", "#{client_name}")
         ):
             return tty
         self.fail("client did not attach")
+
+    def kill(self, sock=None):
+        support.kill_server(["tmux", "-S", str(sock or self.sock)])
 
     def in_tmux(self):
         return {"TMUX": f"{self.sock},1,0"}
@@ -497,7 +500,7 @@ class SessionNotice(Harness):
         self.assertNotIn("peer-a", plain(self.steps()[0]["header"]))
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class AgentsKey(unittest.TestCase):
     def setUp(self):
         tmp = Path(tempfile.mkdtemp())
@@ -505,9 +508,7 @@ class AgentsKey(unittest.TestCase):
         sock = tmp / "s"
         self.tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
         subprocess.run([*self.tmux, "new-session", "-d", "-s", "x"], check=True)
-        self.addCleanup(
-            subprocess.run, [*self.tmux, "kill-server"], capture_output=True
-        )
+        self.addCleanup(support.kill_server, self.tmux)
         self.env = dict(os.environ, TMUX=f"{sock},1,0")
 
     def bind(self, *options):
@@ -563,7 +564,7 @@ class AgentsKey(unittest.TestCase):
         self.assertIn("mine", self.bound(keys, "z")[0])
 
 
-@unittest.skipUnless(shutil.which("fzf"), "needs fzf")
+@support.live("tmux", "fzf")
 class RealFzf(Harness):
     """The real fzf in a pane of the isolated server, keys sent by tmux."""
 
@@ -626,7 +627,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class NamedSocketAlias(Harness):
     """A -L name is an alias too: the proof pins the socket it resolves to."""
 
@@ -652,7 +653,7 @@ class NamedSocketAlias(Harness):
                 ],
                 check=True,
             )
-            self.addCleanup(self.tmux, "kill-server", sock=sock)
+            self.addCleanup(self.kill, sock)
             shown = support.wait_until(  # until the pane has printed it
                 lambda: text in self.tmux("capture-pane", "-p", "-t", "srv", sock=sock)
             )
@@ -709,7 +710,7 @@ class FailureOnTheInvokingServer(Harness):
     def test_jump_failure_reaches_the_client_server_not_the_override(self):
         other = self.tmp / "other"
         self.tmux("new-session", "-d", "-s", "data", sock=other)
-        self.addCleanup(self.tmux, "kill-server", sock=other)
+        self.addCleanup(self.kill, other)
         client = self.attach("notes")
         for given, target in ((client, "j2:x"), ("", "j2:y")):
             with self.subTest(client=given):
@@ -733,7 +734,7 @@ class FailureOnTheInvokingServer(Harness):
                 self.assertNotIn(target, self.tmux("show-messages", sock=other))
 
 
-@unittest.skipUnless(shutil.which("fzf"), "needs fzf")
+@support.live("tmux", "fzf")
 class PluginPathQuoting(Harness):
     """tsesh.tmux sourced from a directory whose name a shell would split."""
 
@@ -774,7 +775,7 @@ class PluginPathQuoting(Harness):
                 self.source_from(name)
                 self.snapshot([self.own(label=f"agent-{len(name)}")])
                 host = self.tmp / "host-notes"
-                self.tmux("kill-server", sock=host)
+                self.kill(host)
                 client = self.attach("notes")
                 self.tmux("send-keys", "-t", "h:", "C-b", "a", sock=host)
                 label = f"agent-{len(name)}"
@@ -803,10 +804,10 @@ class PluginPathQuoting(Harness):
                         + self.tmux("show-messages")
                     )
                 self.tmux("switch-client", "-c", client, "-t", "notes")
-                self.tmux("kill-server", sock=host)
+                self.kill(host)
 
 
-@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+@support.live("tmux")
 class SocketPinnedAtStart(Harness):
     """The server is resolved once, before murmur is read: a name retargeted
     during the read cannot turn a row from one server into a local action on
@@ -818,7 +819,7 @@ class SocketPinnedAtStart(Harness):
         sockdir.mkdir(parents=True, mode=0o700)
         physical_a = self.tmp / "a-sock"
         self.tmux("new-session", "-d", "-s", "SERVER_A", sock=physical_a)
-        self.addCleanup(self.tmux, "kill-server", sock=physical_a)
+        self.addCleanup(self.kill, physical_a)
         alias = sockdir / "review"
         alias.symlink_to(physical_a)
         # self.sock is server B; its %0 is in "notes", the client sits elsewhere.

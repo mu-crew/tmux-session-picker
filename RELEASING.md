@@ -6,7 +6,7 @@ tsesh has no package registry. TPM installs from git, so a release is a tag.
 2. Bump `VERSION` in `bin/tsesh` (SemVer).
 3. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and
    add a fresh empty `## [Unreleased]` above it.
-4. Run the gate:
+4. Run the full gate (see Gates in the README):
 
    ```sh
    uv run --frozen python -m unittest discover -s tests && uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run --frozen ty check
