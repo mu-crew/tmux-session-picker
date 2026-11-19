@@ -460,7 +460,7 @@ def zoxide_paths() -> list[str]:
     result = run(["zoxide", "query", "--list"], check=False)
     if result.returncode != 0:
         return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [line.strip() for line in result.stdout.split("\n") if line.strip()]
 
 
 def glob_escape(name: str) -> str:
@@ -471,7 +471,7 @@ def glob_escape(name: str) -> str:
 def find_paths(config: Config) -> list[str]:
     home = str(Path.home())
     if shutil.which("fd"):
-        cmd = ["fd", "-H", "-d", str(config.find_max_depth), "-t", "d"]
+        cmd = ["fd", "-0", "-H", "-d", str(config.find_max_depth), "-t", "d"]
         for name in sorted(config.blacklist):
             cmd.extend(["-E", name])
         cmd.extend([".", home])
@@ -484,11 +484,15 @@ def find_paths(config: Config) -> list[str]:
             for i, name in enumerate(names):
                 cmd.extend(["-o"] * (i > 0) + ["-name", glob_escape(name)])
             cmd.extend([")", "-prune", "-o"])
-        cmd.extend(["-type", "d", "-print"])
+        cmd.extend(["-type", "d", "-print0"])
     result = run(cmd, check=False)
     if result.returncode != 0:
         return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    # NUL-separated: a path may hold \x1e or other bytes splitlines() breaks on.
+    # A path with a newline cannot be one picker row, so it is not offered.
+    return [
+        p for p in result.stdout.split("\0") if p and "\n" not in p and "\r" not in p
+    ]
 
 
 def is_useful_path(path: str, *, mode: str, config: Config) -> bool:
@@ -1052,7 +1056,9 @@ class TmuxBackend:
     ) -> None:
         # realpath: session_path then names the directory, not a symlink that
         # may later point elsewhere (see live_session_for_path).
-        new_session = ("new-session", "-d", "-s", name, "-c", os.path.realpath(path))
+        # "#" is escaped: tmux format-expands -c.
+        start_dir = os.path.realpath(path).replace("#", "##")
+        new_session = ("new-session", "-d", "-s", name, "-c", start_dir)
         if not server_running():
             # Starting the server may restore NAME; new-session would then
             # fail with "duplicate session". Start it first, then look again.
@@ -1151,24 +1157,38 @@ def pane_cwd(pane_id: str) -> str:
     return os.fsdecode(result.stdout).removesuffix("\n")
 
 
-def live_session_for_path(path: str) -> str | None:
-    """The live session rooted exactly at PATH, if any.
+def format_escape(text: str) -> str:
+    """Escape TEXT as a literal inside a tmux format conditional."""
+    return text.replace("#", "##").replace(",", "#,").replace("}", "#}")
 
-    One list-sessions call, read as bytes. Records end in \\x1e and fields
-    split on \\x1f, since a path may hold newlines or carriage returns. Sessions
-    are created with ``-c <realpath>``, so session_path is canonical; compare it
-    unresolved, or a retargeted symlink would alias the session started at the
-    old target.
+
+def live_session_for_path(path: str) -> str | None:
+    """The live session rooted at PATH, if any.
+
+    tmux does the comparison (``list-sessions -f``) and we read only session
+    ids: a path may hold any byte, including our own record separators, so it
+    is never parsed out of tmux output. Two spellings match: the realpath
+    (what tsesh creates sessions with) and the path as given (what older tsesh
+    stored, possibly through a symlink).
+
+    Accepted limitation: a symlink retargeted after its session was created
+    still reaches that session when connected through the same symlink string.
+    The real path is always exact.
     """
-    wanted = os.path.realpath(os.path.expanduser(path))
-    result = tmux_bytes("list-sessions", "-F", "#{session_name}\x1f#{session_path}\x1e")
-    if result.returncode != 0:
+    given = os.path.expanduser(path)
+    if not os.path.isabs(given):
+        given = os.path.join(os.getcwd(), given)
+    wanted = {os.path.realpath(given), given}
+    clauses = [f"#{{==:#{{session_path}},{format_escape(p)}}}" for p in sorted(wanted)]
+    condition = clauses[0] if len(clauses) == 1 else f"#{{||:{','.join(clauses)}}}"
+    found = tmux_cmd(
+        "list-sessions", "-f", condition, "-F", "#{session_id}", check=False
+    )
+    ids = found.stdout.split()
+    if found.returncode != 0 or not ids:
         return None
-    for record in result.stdout.split(b"\x1e"):
-        name, sep, root = os.fsdecode(record.lstrip(b"\n")).partition("\x1f")
-        if sep and root == wanted:
-            return name
-    return None
+    name = tmux_bytes("display-message", "-p", "-t", ids[0], "#{session_name}")
+    return os.fsdecode(name.stdout).removesuffix("\n") or None
 
 
 def free_name_for_path(name: str, path: str) -> str:

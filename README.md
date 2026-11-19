@@ -91,6 +91,18 @@ the server and switches to the session if it came back, instead of running
 and `split`: those run only when tsesh creates the session. Plain tmux has no snapshot: `start-server` exits at once and
 nothing changes.
 
+## Session names and directories
+
+Picking a directory reuses the live session rooted at that directory, matched
+by its real path (tsesh starts sessions with `new-session -c <realpath>`) or by
+the path as given, which covers sessions an older tsesh started through a
+symlink. Two directories whose names sanitize alike (`a.b`, `a_b`) get
+separate sessions, the second suffixed `-2`. One limitation: if a symlink was
+retargeted after its session was created, connecting through that same symlink
+string reuses the old session. Connecting through the real path is exact.
+Directories with a newline or carriage return in the name are not offered in
+the scan, but `tsesh connect` handles them.
+
 ## Theme
 
 Catppuccin Mocha, hardcoded in `bin/tsesh` between `THEME BEGIN` / `THEME END`

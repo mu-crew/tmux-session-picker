@@ -528,20 +528,24 @@ class NameCollision(unittest.TestCase):
         out = self.run_tmux("list-sessions", "-F", "#{session_name}").stdout
         return out.split()
 
-    def session_paths(self):
-        """Every session's raw #{session_path}, read as bytes (CR != LF)."""
-        out = subprocess.run(
-            [
-                *("tmux", "-f", "/dev/null", "-S", str(self.sock)),
-                *("list-sessions", "-F", "#{session_path}\x1e"),
-            ],
+    def tmux_bytes(self, *args):
+        return subprocess.run(
+            ["tmux", "-f", "/dev/null", "-S", str(self.sock), *args],
             check=False,
             capture_output=True,
         ).stdout
+
+    def session_paths(self):
+        """Every session's raw #{session_path}, one display-message each.
+
+        Bytes in, one trailing newline out: a path may hold any other byte.
+        """
+        ids = self.tmux_bytes("list-sessions", "-F", "#{session_id}").split()
         return [
-            os.fsdecode(rec).lstrip("\n")
-            for rec in out.split(b"\x1e")
-            if rec.strip(b"\n")
+            os.fsdecode(
+                self.tmux_bytes("display-message", "-p", "-t", i, "#{session_path}")
+            ).removesuffix("\n")
+            for i in ids
         ]
 
     def test_recreated_session_does_not_duplicate_a_surviving_suffixed_one(self):
@@ -570,7 +574,7 @@ class NameCollision(unittest.TestCase):
         shim.write_text(
             "#!/usr/bin/env python3\n"
             "import os, sys\n"
-            "for row in sys.stdin.read().splitlines():\n"
+            "for row in sys.stdin.read().split('\\n'):\n"
             "    if row.split('\\t')[3] == os.environ['SHIM_PICK']:\n"
             "        print(row)\n"
             "        sys.exit(0)\n"
@@ -626,6 +630,86 @@ class NameCollision(unittest.TestCase):
         self.assertEqual(self.session_paths().count(str(old)), 1)
         self.pick_find_row(home, new)
         self.assertEqual(self.session_paths().count(str(new)), 1)
+
+    PATH_NAMES = (
+        "with space",
+        "dot.ted",
+        "dollar$HOME",
+        "token-#{version}",
+        "com,ma",
+        "brace}",
+        "hash##",
+        "cr\rname",
+        "lf\nname",
+        "plain",
+        "plain\x1etail",
+        "unit\x1fsep",
+        "caf\u00e9",
+    )
+
+    def test_every_supported_path_routes_to_its_own_session(self):
+        home = self.tmp / "home"
+        home.mkdir()
+        dirs = []
+        for name in self.PATH_NAMES:
+            d = home / name
+            d.mkdir()
+            dirs.append(str(d))
+        for _ in range(2):  # the second pass must reuse, not create
+            for d in dirs:
+                tsesh.connect(d)
+        paths = self.session_paths()
+        for d in dirs:
+            self.assertEqual(paths.count(d), 1, (d, paths))
+        self.assertEqual(len(paths), len(dirs) + 1, paths)  # + keep
+
+    def test_every_pickable_path_routes_to_its_own_session(self):
+        home = self.tmp / "home"
+        home.mkdir()
+        dirs = []
+        for name in self.PATH_NAMES:
+            if "\r" in name or "\n" in name:  # fzf cannot show these rows
+                continue
+            d = home / name
+            d.mkdir()
+            dirs.append(str(d))
+        for _ in range(2):
+            for d in dirs:
+                self.pick_find_row(home, d)
+        paths = self.session_paths()
+        for d in dirs:
+            self.assertEqual(paths.count(d), 1, (d, paths))
+        self.assertEqual(len(paths), len(dirs) + 1, paths)
+
+    def test_session_made_through_a_symlink_by_older_tsesh_is_reused(self):
+        home = self.tmp / "home"
+        work, link = home / "workspace", home / "current"
+        work.mkdir(parents=True)
+        link.symlink_to(work)
+        self.run_tmux("new-session", "-d", "-s", "workspace", "-c", str(link))
+        tsesh.connect(str(link))
+        tsesh.connect(str(link))
+        self.assertEqual(len(self.session_paths()), 2, self.session_paths())
+
+    def test_symlink_to_a_directory_named_like_a_format_stays_literal(self):
+        home = self.tmp / "home"
+        literal = home / "proj-#{version}"
+        literal.mkdir(parents=True)
+        (home / "proj-3.8").mkdir()
+        link = home / "current"
+        link.symlink_to(literal)
+        tsesh.connect(str(link))
+        self.assertIn(str(literal), self.session_paths())
+        ids = self.tmux_bytes("list-sessions", "-F", "#{session_id}").split()
+        cwds = [
+            os.fsdecode(
+                self.tmux_bytes(
+                    "display-message", "-p", "-t", i, "#{pane_current_path}"
+                )
+            ).removesuffix("\n")
+            for i in ids
+        ]
+        self.assertIn(str(literal), cwds)
 
 
 class FakeServer:
