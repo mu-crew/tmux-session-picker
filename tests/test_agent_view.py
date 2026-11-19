@@ -850,3 +850,111 @@ class SocketPinnedAtStart(Harness):
         self.assertIn("jump j1:on-A", self.murmur_calls())
         on = self.tmux("display-message", "-p", "-t", client, "#{session_name}")
         self.assertEqual(on.strip(), "ORIGIN_B")
+
+
+@support.live("tmux")
+class WindowPaths(unittest.TestCase):
+    """Live rows show where the session is; its windows' dirs are its own."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.sock = self.tmp / "s"
+        self.tmux = ["tmux", "-f", "/dev/null", "-S", str(self.sock)]
+        self.addCleanup(support.kill_server, self.tmux)
+        self.dirs = {}
+        for name in ("root", "other", "same", "zox"):
+            self.dirs[name] = self.tmp / name
+            self.dirs[name].mkdir()
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        zoxide = bindir / "zoxide"
+        listed = "\n".join(str(self.dirs[n]) for n in ("root", "other", "zox"))
+        zoxide.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(listed)}\n")
+        zoxide.chmod(0o755)
+        self.env = {
+            **{k: v for k, v in os.environ.items() if not k.startswith("TSESH_")},
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "HOME": str(self.tmp),
+            "TSESH_TMUX_SOCKET_PATH": str(self.sock),
+            "TSESH_CONFIG": str(self.config()),
+            "TSESH_MURMUR": "/nonexistent/murmur",
+            "XDG_STATE_HOME": str(self.tmp / "state"),
+        }
+        # proj: active window in root, two more in other; flat: one dir only.
+        self.on_tmux(
+            "new-session", "-d", "-s", "proj", "-c", str(self.dirs["root"]), "sleep 600"
+        )
+        for _ in range(2):
+            self.on_tmux(
+                "new-window",
+                "-d",
+                "-t",
+                "proj:",
+                "-n",
+                "side",
+                "-c",
+                str(self.dirs["other"]),
+                "sleep 600",
+            )
+        self.on_tmux(
+            "new-session", "-d", "-s", "flat", "-c", str(self.dirs["same"]), "sleep 600"
+        )
+        self.on_tmux(
+            "new-window", "-d", "-t", "flat:", "-c", str(self.dirs["same"]), "sleep 600"
+        )
+
+    def config(self, extra=""):
+        # No blacklist: every temporary directory lives under /tmp.
+        cfg = self.tmp / "config.toml"
+        cfg.write_text(f"blacklist = []\n{extra}")
+        return cfg
+
+    def on_tmux(self, *args):
+        return subprocess.run(
+            [*self.tmux, *args], capture_output=True, text=True, check=False
+        ).stdout
+
+    def tsesh(self, *args):
+        return subprocess.run(
+            [str(TSESH), *args],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+
+    def rows(self, mode="all"):
+        out = self.tsesh("list", "--mode", mode)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return {
+            (r.split("\t")[1], r.split("\t")[2]): plain(r.split("\t")[0])
+            for r in out.stdout.splitlines()
+        }
+
+    def test_live_row_shows_the_active_cwd_and_other_dirs(self):
+        rows = self.rows()
+        proj = rows[("tmux", "proj")]
+        self.assertIn("~/root", proj)
+        self.assertTrue(proj.rstrip().endswith("~/root +1"), proj)
+        flat = rows[("tmux", "flat")]
+        self.assertTrue(flat.rstrip().endswith("~/same"), flat)
+
+    def test_zoxide_dirs_of_a_live_session_are_dropped(self):
+        zoxide = [name for kind, name in self.rows() if kind == "zoxide"]
+        self.assertEqual(zoxide, ["zox"])
+
+    def test_preview_lists_every_window(self):
+        out = self.tsesh("preview", "--kind", "tmux", "--session-name", "proj")
+        lines = out.stdout.splitlines()
+        windows = [line for line in lines if re.match(r"[* ] \d+ ", line)]
+        self.assertEqual(len(windows), 3, out.stdout)
+        self.assertTrue(windows[0].startswith("* 0 "), windows)
+        self.assertIn("1p  ~/root", windows[0])
+        self.assertIn("side  1p  ~/other", windows[1])
+
+    def test_a_pinned_session_not_running_keeps_its_configured_path(self):
+        self.config(f'[[sessions]]\nname = "pin"\npath = "{self.dirs["zox"]}"\n')
+        rows = self.rows("sessions")
+        self.assertTrue(rows[("default", "pin")].rstrip().endswith("~/zox"))

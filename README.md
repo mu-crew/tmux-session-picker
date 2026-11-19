@@ -161,6 +161,13 @@ nothing changes.
 
 ## Session names and directories
 
+A live session's row shows its active pane's directory, and a dim `+N` when its
+windows sit in N other directories. A zoxide or scan directory that a live
+session is rooted at, or has a window in, is not listed again: that session's
+row stands for it. The preview of a live session lists every window (active
+marker, index, agent state, name, pane count, directory) above the active
+pane's contents.
+
 Picking a directory reuses the live session rooted at that directory, matched
 by its real path (tsesh starts sessions with `new-session -c <realpath>`) or by
 the path as given, which covers sessions an older tsesh started through a

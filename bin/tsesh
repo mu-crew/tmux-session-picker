@@ -350,6 +350,7 @@ class Entry:
     detail: str = ""  # shown where a path would be (agent rows)
     marker: str = ""  # "current", "attached" or "": see marker_cell
     text: str = ""  # pre-rendered columns (agents view); replaces the layout
+    extra: str = ""  # dim note after the path ("+2": windows in other dirs)
     session_id: str = ""
 
     @property
@@ -381,7 +382,12 @@ class Entry:
             text = f"{self.icon} {name} {cell}"
             if self.display_path:
                 text = f"{text}{' ' * (STATE_WIDTH - len(cell))}{self.display_path}"
-        return marker_cell(self.marker) + self.styled(text)
+        note = (
+            " " + ansi_style(self.extra, fg=CATPPUCCIN["overlay0"])
+            if self.extra
+            else ""
+        )
+        return marker_cell(self.marker) + self.styled(text) + note
 
     def styled(self, text: str) -> str:
         # Agent states win over the kind colour: a blocked or crashed agent
@@ -1469,6 +1475,21 @@ def build_view(
             return "current"
         return "attached" if name in attached else ""
 
+    def where(name: str) -> dict[str, str]:
+        """A live row's path: the active pane's cwd, and "+N" for the other
+        directories its windows sit in."""
+        if name not in live_names or not isinstance(live, LiveSessions):
+            return {}
+        cwd, others = live.location(name)
+        if not cwd:
+            return {}
+        return {"detail": tildify(cwd), "extra": f"+{others}" if others else ""}
+
+    # A directory with a live session is offered by that session's row only.
+    taken = configured_paths | (
+        live.dirs() if isinstance(live, LiveSessions) else set()
+    )
+
     if mode in {"all", "sessions"}:
         entries.extend(
             Entry(
@@ -1483,6 +1504,7 @@ def build_view(
                 agent_counts=counts_for(session.name),
                 marker=marker_for(session.name),
                 session_id=ids.get(session.name, ""),
+                **where(session.name),
             )
             for session in configured_sessions
         )
@@ -1502,6 +1524,7 @@ def build_view(
                     agent_counts=counts_for(session_name),
                     marker=marker_for(session_name),
                     session_id=ids.get(session_name, ""),
+                    **where(session_name),
                 )
             )
 
@@ -1510,7 +1533,7 @@ def build_view(
             build_path_entries(
                 kind="zoxide",
                 paths=zoxide_paths(),
-                configured_paths=configured_paths,
+                configured_paths=taken,
                 mode="zoxide",
                 config=config,
             )
@@ -1521,7 +1544,7 @@ def build_view(
             build_path_entries(
                 kind="find",
                 paths=find_paths(config),
-                configured_paths=configured_paths,
+                configured_paths=taken,
                 mode="find",
                 config=config,
             )
@@ -1547,7 +1570,9 @@ def tmux_session_preview(name: str) -> int:
         "-t",
         exact_session_target(name),
         "-F",
-        "#{window_index}\t#{window_active}\t#{window_name}\t#{window_panes}\t#{@murmur_window_state}",
+        # The path last: it may hold a tab (a window name is assumed not to).
+        "#{window_index}\t#{window_active}\t#{window_panes}"
+        "\t#{@murmur_window_state}\t#{window_name}\t#{pane_current_path}",
         check=False,
     )
     panes = tmux_cmd(
@@ -1565,32 +1590,33 @@ def tmux_session_preview(name: str) -> int:
     session_name, _, attached = session.stdout.strip().partition("\t")
     attention_total = 0
     active_window_index = ""
-    active_window_name = ""
-    active_window_state = ""
+    window_lines: list[str] = []
     for line in windows.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) != 5:
+        parts = line.split("\t", 5)
+        if len(parts) != 6:
             continue
-        window_index, window_active, window_name, _window_panes, window_state = parts
-        if AgentState.parse(window_state) in ATTENTION_STATES:
+        index, active, pane_count, raw_state, window_name, window_path = parts
+        state = AgentState.parse(raw_state)
+        if state in ATTENTION_STATES:
             attention_total += 1
-        if window_active == "1":
-            active_window_index = window_index
-            active_window_name = window_name
-            active_window_state = window_state
+        if active == "1":
+            active_window_index = index
+        glyph = STATE_GLYPH[state] if state else " "
+        window_lines.append(
+            f"{'*' if active == '1' else ' '} {index} {glyph} {window_name}"
+            f"  {pane_count}p  {tildify(window_path)}"
+        )
 
     active_pane_index = ""
     active_command = ""
-    active_path = ""
     for line in panes.stdout.splitlines():
-        parts = line.split("\t")
+        parts = line.split("\t", 5)
         if len(parts) != 6:
             continue
-        window_index, pane_index, pane_active, window_active, command, pane_path = parts
+        window_index, pane_index, pane_active, window_active, command, _ = parts
         if window_active == "1" and pane_active == "1":
             active_pane_index = pane_index
             active_command = command
-            active_path = pane_path
             if not active_window_index:
                 active_window_index = window_index
             break
@@ -1602,14 +1628,11 @@ def tmux_session_preview(name: str) -> int:
         meta.append(f"attention {attention_total}")
     suffix = f" ({', '.join(meta)})" if meta else ""
     print(f"{session_name}{suffix}")
-
-    if active_window_index:
-        _ws = AgentState.parse(active_window_state)
-        state_marker = (" " + STATE_GLYPH[_ws]) if _ws else ""
-        print(f"window: {active_window_index}{state_marker} {active_window_name}")
+    # Every window: active marker, index, state, name, panes, cwd.
+    for line in window_lines:
+        print(line)
     if active_pane_index:
-        short_path = tildify(active_path)
-        print(f"pane: {active_pane_index}  {active_command}  {short_path}")
+        print(f"pane: {active_pane_index}  {active_command}")
     print()
 
     target = (
@@ -1953,6 +1976,25 @@ class LiveSessions(dict[str, AgentState | None]):
     def __init__(self) -> None:
         super().__init__()
         self.ids: dict[str, str] = {}  # name -> tmux session id ($N)
+        self.paths: dict[str, str] = {}  # name -> #{session_path}
+        # name -> (active, cwd of the window's active pane), one per window
+        self.windows: dict[str, list[tuple[bool, str]]] = {}
+
+    def location(self, name: str) -> tuple[str, int]:
+        """Where session NAME is: its active window's cwd, and how many other
+        directories its windows sit in."""
+        windows = self.windows.get(name, [])
+        here = next((cwd for active, cwd in windows if active), "")
+        here = here or self.paths.get(name, "")
+        others = {os.path.realpath(cwd) for _, cwd in windows if cwd}
+        others.discard(os.path.realpath(here) if here else "")
+        return here, len(others)
+
+    def dirs(self) -> set[str]:
+        """Every directory a live session is rooted at or has a window in."""
+        found = {p for p in self.paths.values() if p}
+        found |= {cwd for ws in self.windows.values() for _, cwd in ws if cwd}
+        return {os.path.realpath(p) for p in found}
 
 
 class TmuxBackend:
@@ -1966,24 +2008,44 @@ class TmuxBackend:
 
         None when no server runs, so a caller can start one and ask again.
         """
+        # Two lines per session: its fields, then its path, each keyed by the
+        # session id. Free text (name, path) comes last on its line.
         result = tmux_cmd(
             "list-sessions",
             "-F",
-            "#{session_attached}\t#{session_id}\t#{@murmur_session_state}\t#{session_name}",
+            "#{session_attached}\t#{session_id}\t#{@murmur_session_state}"
+            "\t#{session_name}\n#{session_id}\tP\t#{session_path}",
             check=False,
         )
         if result.returncode != 0:
             return None
         live = LiveSessions()
         attached: set[str] = set()
+        names: dict[str, str] = {}  # id -> name
+        paths: dict[str, str] = {}
         for line in result.stdout.splitlines():
+            if m := re.fullmatch(r"(\$[0-9]+)\tP\t(.*)", line):
+                paths[m[1]] = m[2]
+                continue
             clients, sid, raw, name = [*line.split("\t", 3), "", "", ""][:4]
-            if name.strip():
+            if name.strip() and re.fullmatch(r"\$[0-9]+", sid):
                 live[name] = AgentState.parse(raw)
                 live.ids[name] = sid
+                names[sid] = name
                 if clients not in {"", "0"}:
                     attached.add(name)
         live.attached = frozenset(attached)
+        live.paths = {names[sid]: path for sid, path in paths.items() if sid in names}
+        windows = tmux_cmd(
+            "list-windows",
+            "-a",
+            "-F",
+            "#{session_id}\t#{window_active}\t#{pane_current_path}",
+            check=False,
+        )
+        for line in windows.stdout.splitlines() if windows.returncode == 0 else ():
+            if (m := re.fullmatch(r"(\$[0-9]+)\t([01])\t(.*)", line)) and m[1] in names:
+                live.windows.setdefault(names[m[1]], []).append((m[2] == "1", m[3]))
         return live
 
     def exists(self, name: str) -> bool:
