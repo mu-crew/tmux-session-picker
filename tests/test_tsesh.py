@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import re
 import shutil
@@ -238,6 +240,18 @@ class Config(unittest.TestCase):
         )
         with self.assertRaisesRegex(tsesh.ConfigError, "config.toml"):
             tsesh.load_config()
+
+
+class PreviewEmptyPath(unittest.TestCase):
+    def test_pathless_row_does_not_run_preview_command(self):
+        calls = []
+        old = tsesh.os.execvp
+        tsesh.os.execvp = lambda *a: calls.append(a)
+        self.addCleanup(setattr, tsesh.os, "execvp", old)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            tsesh.preview("", "gone", "")
+        self.assertEqual(calls, [])
+        self.assertIn("session: gone", out.getvalue())
 
 
 class BuildEntries(unittest.TestCase):

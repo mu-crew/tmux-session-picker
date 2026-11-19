@@ -846,7 +846,7 @@ def preview(path: str, session_name: str = "", kind: str = "", split: str = "") 
     ):
         return tmux_session_preview(session_name)
 
-    target = expand(path)
+    target = expand(path) if path else ""
     if not target:
         if split and kind == "default":
             print(f"session: {session_name or '(unknown)'}\nsplit: {split}", end="")
