@@ -495,7 +495,7 @@ class NameCollision(unittest.TestCase):
         self.run_tmux("new-session", "-d", "-s", "keep")
         for owner, attr, value in (
             (tsesh, "start_server_in_own_scope", lambda args: False),
-            (tsesh.TmuxBackend, "switch", lambda self, name: None),
+            (tsesh.TmuxBackend, "switch", lambda self, name, target=None: None),
         ):
             self.addCleanup(setattr, owner, attr, getattr(owner, attr))
             setattr(owner, attr, value)
@@ -710,6 +710,26 @@ class NameCollision(unittest.TestCase):
             for i in ids
         ]
         self.assertIn(str(literal), cwds)
+
+    def test_session_named_like_an_id_does_not_alias_the_matched_id(self):
+        home = self.tmp / "home"
+        d = home / "dollar$HOME"
+        d.mkdir(parents=True)
+        # Session "$0" at d gets id $N (N>0); id $0 is the "keep" session.
+        self.run_tmux("new-session", "-d", "-s", "$0", "-c", str(d))
+        switched = []
+        old = tsesh.TmuxBackend.switch
+        tsesh.TmuxBackend.switch = lambda self, name, target=None: switched.append(
+            (name, target)
+        )
+        self.addCleanup(setattr, tsesh.TmuxBackend, "switch", old)
+        tsesh.connect(str(d))
+        self.assertEqual(len(switched), 1)
+        name, target = switched[0]
+        resolved = self.tmux_bytes(
+            "display-message", "-p", "-t", target or f"={name}", "#{session_path}"
+        )
+        self.assertEqual(os.fsdecode(resolved).removesuffix("\n"), str(d))
 
 
 class FakeServer:

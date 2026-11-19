@@ -1031,11 +1031,17 @@ class TmuxBackend:
             == 0
         )
 
-    def switch(self, name: str) -> None:
+    def switch(self, name: str, target: str | None = None) -> None:
+        """Switch to NAME, or to TARGET (a session id) when the caller has one.
+
+        An id is the only unambiguous target: ``=$0`` means id $0, even when a
+        session is literally named "$0".
+        """
+        target = target or exact_session_target(name)
         if os.environ.get("TMUX"):
-            tmux_cmd("switch-client", "-t", exact_session_target(name), capture=False)
+            tmux_cmd("switch-client", "-t", target, capture=False)
         else:
-            tmux_cmd("attach-session", "-t", exact_session_target(name), capture=False)
+            tmux_cmd("attach-session", "-t", target, capture=False)
         update_last(name)
 
     def ensure_server(self) -> None:
@@ -1126,7 +1132,10 @@ def connect_resolved(
     it gets a suffix then.
     """
     if derived_name and path:
-        session_name = free_name_for_path(session_name, path)
+        if live := live_session_for_path(path):
+            backend().switch(live.name, target=live.id)
+            return 0
+        session_name = free_name_for_path(session_name)
     if backend().exists(session_name):
         backend().switch(session_name)
         return 0
@@ -1157,12 +1166,18 @@ def pane_cwd(pane_id: str) -> str:
     return os.fsdecode(result.stdout).removesuffix("\n")
 
 
+@dataclass(frozen=True)
+class LiveSession:
+    id: str  # "$N": the only target that cannot alias another session's name
+    name: str
+
+
 def format_escape(text: str) -> str:
     """Escape TEXT as a literal inside a tmux format conditional."""
     return text.replace("#", "##").replace(",", "#,").replace("}", "#}")
 
 
-def live_session_for_path(path: str) -> str | None:
+def live_session_for_path(path: str) -> LiveSession | None:
     """The live session rooted at PATH, if any.
 
     tmux does the comparison (``list-sessions -f``) and we read only session
@@ -1188,18 +1203,15 @@ def live_session_for_path(path: str) -> str | None:
     if found.returncode != 0 or not ids:
         return None
     name = tmux_bytes("display-message", "-p", "-t", ids[0], "#{session_name}")
-    return os.fsdecode(name.stdout).removesuffix("\n") or None
+    return LiveSession(ids[0], os.fsdecode(name.stdout).removesuffix("\n"))
 
 
-def free_name_for_path(name: str, path: str) -> str:
-    """The session to use for PATH: the live one rooted there, else a free name.
+def free_name_for_path(name: str) -> str:
+    """NAME, or NAME-2, NAME-3... when sanitizing made it collide.
 
-    Sanitizing maps distinct paths (``a.b`` and ``a_b``) to one name, so a
-    free name is NAME, NAME-2, NAME-3... Looking the directory up first keeps
-    one session per directory even when an earlier one was killed.
+    Sanitizing maps distinct paths (``a.b`` and ``a_b``) to one name. Callers
+    look the directory's own session up first (live_session_for_path).
     """
-    if existing := live_session_for_path(path):
-        return existing
     candidate, n = name, 1
     while backend().exists(candidate):
         n += 1
