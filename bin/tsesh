@@ -173,6 +173,8 @@ def start_server_in_own_scope(new_session: tuple[str, ...]) -> bool:
 DISPLAY_NAME_WIDTH = 30
 # Room for three "glyph+count" groups; the header and every row share it.
 STATE_WIDTH = 11
+# Window and pane counts of a live session ("3w 5p").
+COUNTS_WIDTH = 7
 DEFAULT_SPLIT = ""
 CONFIG_PATH = Path(
     os.environ.get("TSESH_CONFIG")
@@ -313,6 +315,14 @@ def row_unescape(value: str) -> str:
     return re.sub(r"\\(.)", lambda m: ROW_UNESCAPES.get(m[1], m[0]), value, flags=re.S)
 
 
+def counts_cell(windows: int, panes: int) -> str:
+    """Window and pane counts ("3w 5p"); just the windows when both do not fit."""
+    both = f"{windows}w {panes}p"
+    if len(both) <= COUNTS_WIDTH:
+        return both
+    return f"{windows}w" if windows <= 99 else "99+w"
+
+
 def state_cell(counts: tuple[tuple[AgentState, int], ...]) -> str:
     """Per-state agent counts, strongest first, within STATE_WIDTH.
 
@@ -351,6 +361,7 @@ class Entry:
     marker: str = ""  # "current", "attached" or "": see marker_cell
     text: str = ""  # pre-rendered columns (agents view); replaces the layout
     extra: str = ""  # dim note after the path ("+2": windows in other dirs)
+    counts: str = ""  # live sessions: counts_cell
     session_id: str = ""
 
     @property
@@ -380,8 +391,10 @@ class Entry:
             else:
                 cell = STATE_GLYPH[ws] if ws is not None else " "
             text = f"{self.icon} {name} {cell}"
-            if self.display_path:
-                text = f"{text}{' ' * (STATE_WIDTH - len(cell))}{self.display_path}"
+            if self.display_path or self.counts:
+                pad = " " * (STATE_WIDTH - len(cell))
+                counts = self.counts.ljust(COUNTS_WIDTH)
+                text = f"{text}{pad}{counts} {self.display_path}".rstrip()
         note = (
             " " + ansi_style(self.extra, fg=CATPPUCCIN["overlay0"])
             if self.extra
@@ -621,7 +634,8 @@ def header_text(
         titles += " age"
     else:
         titles = (
-            f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(STATE_WIDTH)}path"
+            f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(STATE_WIDTH)}"
+            f"{'windows'.ljust(COUNTS_WIDTH)} path"
         )
     lines.append(f"{UNDERLINE}{titles}{RESET}")
     return "\n".join(lines)
@@ -1481,9 +1495,11 @@ def build_view(
         if name not in live_names or not isinstance(live, LiveSessions):
             return {}
         cwd, others = live.location(name)
-        if not cwd:
-            return {}
-        return {"detail": tildify(cwd), "extra": f"+{others}" if others else ""}
+        found = {"counts": live.counts(name)}
+        if cwd:
+            found["detail"] = tildify(cwd)
+            found["extra"] = f"+{others}" if others else ""
+        return found
 
     # A directory with a live session is offered by that session's row only.
     taken = configured_paths | (
@@ -1977,23 +1993,30 @@ class LiveSessions(dict[str, AgentState | None]):
         super().__init__()
         self.ids: dict[str, str] = {}  # name -> tmux session id ($N)
         self.paths: dict[str, str] = {}  # name -> #{session_path}
-        # name -> (active, cwd of the window's active pane), one per window
-        self.windows: dict[str, list[tuple[bool, str]]] = {}
+        # name -> (active, panes, cwd of the active pane), one per window
+        self.windows: dict[str, list[tuple[bool, int, str]]] = {}
 
     def location(self, name: str) -> tuple[str, int]:
         """Where session NAME is: its active window's cwd, and how many other
         directories its windows sit in."""
         windows = self.windows.get(name, [])
-        here = next((cwd for active, cwd in windows if active), "")
+        here = next((cwd for active, _, cwd in windows if active), "")
         here = here or self.paths.get(name, "")
-        others = {os.path.realpath(cwd) for _, cwd in windows if cwd}
+        others = {os.path.realpath(cwd) for _, _, cwd in windows if cwd}
         others.discard(os.path.realpath(here) if here else "")
         return here, len(others)
+
+    def counts(self, name: str) -> str:
+        """counts_cell for session NAME, or "" when its windows are unknown."""
+        windows = self.windows.get(name, [])
+        if not windows:
+            return ""
+        return counts_cell(len(windows), sum(panes for _, panes, _ in windows))
 
     def dirs(self) -> set[str]:
         """Every directory a live session is rooted at or has a window in."""
         found = {p for p in self.paths.values() if p}
-        found |= {cwd for ws in self.windows.values() for _, cwd in ws if cwd}
+        found |= {cwd for ws in self.windows.values() for _, _, cwd in ws if cwd}
         return {os.path.realpath(p) for p in found}
 
 
@@ -2040,12 +2063,14 @@ class TmuxBackend:
             "list-windows",
             "-a",
             "-F",
-            "#{session_id}\t#{window_active}\t#{pane_current_path}",
+            "#{session_id}\t#{window_active}\t#{window_panes}\t#{pane_current_path}",
             check=False,
         )
+        window_line = re.compile(r"(\$[0-9]+)\t([01])\t([0-9]+)\t(.*)")
         for line in windows.stdout.splitlines() if windows.returncode == 0 else ():
-            if (m := re.fullmatch(r"(\$[0-9]+)\t([01])\t(.*)", line)) and m[1] in names:
-                live.windows.setdefault(names[m[1]], []).append((m[2] == "1", m[3]))
+            if (m := window_line.fullmatch(line)) and m[1] in names:
+                window = (m[2] == "1", int(m[3]), m[4])
+                live.windows.setdefault(names[m[1]], []).append(window)
         return live
 
     def exists(self, name: str) -> bool:

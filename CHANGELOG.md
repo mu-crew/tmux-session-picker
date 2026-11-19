@@ -49,6 +49,8 @@ versions follow [SemVer](https://semver.org/).
 - The view keys are fzf `transform` bindings (`tsesh fzf-action`); each view
   sets its own header and prompt.
 
+- Live session rows count windows and panes (`3w 5p`, blank for a pinned
+  session that is not running).
 - Live session rows show the active pane's directory, with a dim `+N` for
   windows in other directories; zoxide and scan rows for a directory a live
   session already covers are dropped; the session preview lists every window.

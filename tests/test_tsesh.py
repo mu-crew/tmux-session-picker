@@ -67,6 +67,14 @@ def config(**over):
 
 
 class RowRendering(unittest.TestCase):
+    def test_counts_cell_fits_its_column(self):
+        cell = tsesh.counts_cell
+        self.assertEqual(cell(3, 5), "3w 5p")
+        self.assertEqual(cell(12, 140), "12w")
+        self.assertEqual(cell(140, 900), "99+w")
+        for w, p in ((1, 1), (99, 99), (100, 100), (5, 1000)):
+            self.assertLessEqual(len(cell(w, p)), tsesh.COUNTS_WIDTH)
+
     def test_every_state_renders(self):
         # Regression carried over from tms: a palette key missing for one state
         # killed the whole picker exactly when a crashed agent existed.
@@ -106,7 +114,19 @@ class RowRendering(unittest.TestCase):
                 kind="tmux", name="shell", session_name="shell", path="/tmp/shell"
             ).visible_text(),
         )
+        counted = ANSI.sub(
+            "",
+            tsesh.Entry(
+                kind="tmux",
+                name="live",
+                session_name="live",
+                detail="~/live",
+                counts="3w 12p",
+            ).visible_text(),
+        )
         header = ANSI.sub("", tsesh.header_text().splitlines()[-1])
+        self.assertEqual(header.index("windows"), counted.index("3w 12p"))
+        self.assertEqual(header.index("path"), counted.index("~/live"))
         self.assertEqual(header.index("session"), with_state.index("docs"))
         self.assertEqual(
             header.index("state"), with_state.index(tsesh.STATE_GLYPH[State.done])

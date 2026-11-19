@@ -897,6 +897,7 @@ class WindowPaths(unittest.TestCase):
                 str(self.dirs["other"]),
                 "sleep 600",
             )
+        self.on_tmux("split-window", "-d", "-t", "proj:0", "sleep 600")
         self.on_tmux(
             "new-session", "-d", "-s", "flat", "-c", str(self.dirs["same"]), "sleep 600"
         )
@@ -941,6 +942,13 @@ class WindowPaths(unittest.TestCase):
         flat = rows[("tmux", "flat")]
         self.assertTrue(flat.rstrip().endswith("~/same"), flat)
 
+    def test_live_rows_count_windows_and_panes_pins_not_running_do_not(self):
+        self.config(f'[[sessions]]\nname = "pin"\npath = "{self.dirs["zox"]}"\n')
+        rows = self.rows("sessions")
+        self.assertIn(" 3w 4p ", rows[("tmux", "proj")])
+        self.assertIn(" 2w 2p ", rows[("tmux", "flat")])
+        self.assertNotRegex(rows[("default", "pin")], r"\dw \d+p")
+
     def test_zoxide_dirs_of_a_live_session_are_dropped(self):
         zoxide = [name for kind, name in self.rows() if kind == "zoxide"]
         self.assertEqual(zoxide, ["zox"])
@@ -951,7 +959,7 @@ class WindowPaths(unittest.TestCase):
         windows = [line for line in lines if re.match(r"[* ] \d+ ", line)]
         self.assertEqual(len(windows), 3, out.stdout)
         self.assertTrue(windows[0].startswith("* 0 "), windows)
-        self.assertIn("1p  ~/root", windows[0])
+        self.assertIn("2p  ~/root", windows[0])
         self.assertIn("side  1p  ~/other", windows[1])
 
     def test_a_pinned_session_not_running_keeps_its_configured_path(self):
