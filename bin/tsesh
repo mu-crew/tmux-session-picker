@@ -321,6 +321,7 @@ class EntryPayload:
     """
 
     session_name: str
+    kind: str = ""
     path: str | None = None
     startup: str | None = None
     split: str = DEFAULT_SPLIT
@@ -330,6 +331,7 @@ class EntryPayload:
         fields = Entry.from_fzf_row(row)
         return cls(
             session_name=fields["session_name"],
+            kind=fields["kind"],
             path=fields["path"] or None,
             startup=fields["startup"] or None,
             split=fields["split"] or DEFAULT_SPLIT,
@@ -958,7 +960,11 @@ def pick_and_connect(mode: str = "all", query: str = "") -> int:
         return 1
     payload = EntryPayload.from_fzf_row(choice)
     return connect_resolved(
-        payload.session_name, payload.path, payload.startup, payload.split
+        payload.session_name,
+        payload.path,
+        payload.startup,
+        payload.split,
+        derived_name=payload.kind in {"zoxide", "find"},
     )
 
 
@@ -1080,7 +1086,17 @@ def connect_resolved(
     path: str | None,
     startup: str | None,
     split: str = DEFAULT_SPLIT,
+    *,
+    derived_name: bool = False,
 ) -> int:
+    """Switch to SESSION_NAME, creating it at PATH if needed.
+
+    ``derived_name`` marks a name computed from PATH (not a configured or live
+    session's own name): it may collide with another directory's session, so
+    it gets a suffix then.
+    """
+    if derived_name and path:
+        session_name = free_name_for_path(session_name, path)
     if backend().exists(session_name):
         backend().switch(session_name)
         return 0
@@ -1164,8 +1180,8 @@ def connect(target: str) -> int:
     # session name (attach if it exists, error otherwise — connect_resolved
     # handles both via its `path is None` branch).
     path = target if Path(target).exists() else None
-    name = free_name_for_path(session_name_for_path(target), path) if path else target
-    return connect_resolved(name, path, None, DEFAULT_SPLIT)
+    name = session_name_for_path(target) if path else target
+    return connect_resolved(name, path, None, DEFAULT_SPLIT, derived_name=True)
 
 
 def last() -> int:

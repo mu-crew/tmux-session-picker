@@ -498,6 +498,33 @@ class NameCollision(unittest.TestCase):
         names = self.run_tmux("list-sessions", "-F", "#{session_name}").stdout.split()
         self.assertEqual(len(names), 3, names)
 
+    def test_picker_rows_for_colliding_dirs_get_distinct_sessions(self):
+        a, b = self.tmp / "a.b", self.tmp / "a_b"
+        a.mkdir()
+        b.mkdir()
+        rows = [
+            tsesh.Entry(
+                kind="zoxide",
+                name=d.name,
+                session_name=tsesh.session_name_for_path(str(d)),
+                path=str(d),
+            ).to_fzf_row()
+            for d in (a, b)
+        ]
+        picks = iter(rows)
+
+        def fake_fzf(mode, query, *, capture):
+            return subprocess.CompletedProcess([], 0, stdout=next(picks) + "\n")
+
+        old = tsesh.run_fzf
+        tsesh.run_fzf = fake_fzf
+        self.addCleanup(setattr, tsesh, "run_fzf", old)
+        tsesh.pick_and_connect()
+        tsesh.pick_and_connect()
+        paths = self.run_tmux("list-sessions", "-F", "#{session_path}").stdout.split()
+        self.assertIn(str(a), paths)
+        self.assertIn(str(b), paths)
+
 
 class FakeServer:
     """A tmux server that may "restore" sessions when started.
