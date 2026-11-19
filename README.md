@@ -135,6 +135,9 @@ client itself only when the picker runs inside the agent's tmux server;
 otherwise it runs `murmur jump`, which handles other hosts and servers and
 any confirmation it needs on the terminal.
 
+Open it through the `prefix a` binding (it passes `--client`), or pass
+`--client` yourself; otherwise errors may show on another client.
+
 ## Server lifetime
 
 When tsesh starts the tmux server from inside a unit of the systemd user
