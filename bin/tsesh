@@ -206,12 +206,19 @@ def fit(text: str, width: int, *, keep: str = "end") -> str:
     if cell_width(text) <= width:
         return text + " " * (width - cell_width(text))
     if keep == "middle" and "/" in text:
-        head, _, tail = text.partition("/")
-        tail = tail.rsplit("/", 1)[-1]
-        joined = f"{head}/\u2026/{tail}"
-        if cell_width(joined) <= width:
-            return fit(joined, width)
-        keep = "end"
+        # The leaf (last component) is what tells sessions apart: keep it
+        # whole and shorten the start; only a leaf too long for the column
+        # is cut itself.
+        leaf = text.rsplit("/", 1)[1]
+        room = width - cell_width(leaf) - 2  # "…/"
+        if room < 1:
+            return fit(leaf, width)
+        head = ""
+        for ch in text:
+            if cell_width(head + ch) > room:
+                break
+            head += ch
+        return fit(f"{head}\u2026/{leaf}", width)
     if keep == "start":
         out = ""
         for ch in reversed(text):

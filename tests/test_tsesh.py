@@ -246,9 +246,28 @@ class ResponsiveLayout(unittest.TestCase):
         self.assertEqual(widths[3:], sorted(widths[3:]))
         at_width(self, 100)
         row = ANSI.sub("", long_rows()[0].visible_text())
-        self.assertIn("hacking/\u2026/murmur", row)
+        self.assertIn("hacking/crew/some-very-\u2026/murmur ", row)  # leaf whole
         self.assertIn("\u2026", row.split("murmur", 1)[1])  # path cut at its start
         self.assertTrue(row.rstrip().endswith("tree/murmur +3"), row)
+
+    def test_slashed_names_keep_their_leaf(self):
+        names = [
+            f"group-team-with-a-long-name/deploy/{leaf}"
+            for leaf in ("production", "staging")
+        ]
+        for width in range(14, 41):
+            with self.subTest(width=width):
+                shown = [tsesh.fit(n, width, keep="middle") for n in names]
+                for name, text in zip(names, shown, strict=True):
+                    self.assertEqual(tsesh.cell_width(text), width)
+                    self.assertTrue(
+                        text.rstrip().endswith(name.rsplit("/", 1)[1]), text
+                    )
+                self.assertNotEqual(shown[0], shown[1])
+        self.assertEqual(
+            tsesh.fit("hacking/crew/murmur", 16, keep="middle"), "hacking/…/murmur"
+        )
+        self.assertEqual(tsesh.fit("a/" + "x" * 30, 10, keep="middle"), "x" * 9 + "…")
 
     def test_wide_labels_keep_the_columns_aligned(self):
         at_width(self, 160)
