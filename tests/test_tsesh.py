@@ -370,7 +370,9 @@ class TmuxErrorsAreReported(unittest.TestCase):
         tsesh.pause_for_error = lambda: None
         self.addCleanup(setattr, tsesh, "connect", old)
         self.addCleanup(setattr, tsesh, "pause_for_error", old_pause)
-        with contextlib.redirect_stderr(io.StringIO()) as err:
+        # In-process: never pin this process to whatever server $TMUX names.
+        pin = unittest.mock.patch.object(tsesh, "pin_own_server", lambda: None)
+        with pin, contextlib.redirect_stderr(io.StringIO()) as err:
             code = tsesh.main(["connect", "x"])
         self.assertEqual(code, 1)
         self.assertIn("no such thing", err.getvalue())
@@ -1069,6 +1071,8 @@ if args[:3] == ["status", "--json", "--cached"]:
         sys.exit(1)
     if mode == "slow":
         time.sleep(5)
+    if os.environ.get("FAKE_MURMUR_ON_STATUS"):
+        os.system(os.environ["FAKE_MURMUR_ON_STATUS"])
     sys.stdout.write(open(os.environ["FAKE_MURMUR_JSON"]).read())
     sys.exit(0)
 if args[:1] == ["jump"]:

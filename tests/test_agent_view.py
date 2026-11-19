@@ -809,3 +809,48 @@ class PluginPathQuoting(Harness):
                     )
                 self.tmux("switch-client", "-c", client, "-t", "notes")
                 self.tmux("kill-server", sock=host)
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class SocketPinnedAtStart(Harness):
+    """The server is resolved once, before murmur is read: a name retargeted
+    during the read cannot turn a row from one server into a local action on
+    another."""
+
+    def test_named_socket_retargeted_during_the_murmur_read(self):
+        tmpdir = self.tmp / "tmuxdir"
+        sockdir = Path(os.path.realpath(tmpdir)) / f"tmux-{os.getuid()}"
+        sockdir.mkdir(parents=True, mode=0o700)
+        physical_a = self.tmp / "a-sock"
+        self.tmux("new-session", "-d", "-s", "SERVER_A", sock=physical_a)
+        self.addCleanup(self.tmux, "kill-server", sock=physical_a)
+        alias = sockdir / "review"
+        alias.symlink_to(physical_a)
+        # self.sock is server B; its %0 is in "notes", the client sits elsewhere.
+        self.tmux("new-session", "-d", "-s", "ORIGIN_B")
+        client = self.attach("ORIGIN_B")
+        row = agent_pane(
+            pane="%0",
+            session_name="SERVER_A",
+            label="cache-from-A",
+            jump_target="j1:on-A",
+            server={"kind": "label", "value": "review"},
+        )
+        self.snapshot([row])
+        out = self.tsesh(
+            "pick-and-connect",
+            "--mode",
+            "agents",
+            "--client",
+            client,
+            pick="cache-from-A",
+            TMUX_TMPDIR=str(tmpdir),
+            TSESH_TMUX_SOCKET_NAME="review",
+            FAKE_MURMUR_ON_STATUS=f"ln -sfn {shlex.quote(str(self.sock))} "
+            f"{shlex.quote(str(alias))}",
+            **self.in_tmux(),
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("jump j1:on-A", self.murmur_calls())
+        on = self.tmux("display-message", "-p", "-t", client, "#{session_name}")
+        self.assertEqual(on.strip(), "ORIGIN_B")

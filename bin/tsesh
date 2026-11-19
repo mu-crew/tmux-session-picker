@@ -1077,8 +1077,33 @@ def conventional_tmux_dir() -> str | None:
         return None
 
 
+# The socket own_socket() resolved when this process started (see
+# pin_own_server): None until then.
+START_SOCKET: str | None = None
+
+
+def pin_own_server() -> None:
+    """Resolve tsesh's server once, before murmur is read, and talk to it.
+
+    Every later proof compares against this one physical path, and every tmux
+    call names it with -S, so an alias (-L name, $TMUX, a symlink) retargeted
+    mid-run can neither pass a proof nor redirect a call. Without a server yet
+    the socket does not exist; then calls keep the plain arguments, so tmux can
+    create its socket directory when it starts one.
+    """
+    global START_SOCKET, PINNED_SOCKET
+    START_SOCKET = resolve_own_socket()
+    if START_SOCKET and os.path.exists(START_SOCKET):
+        PINNED_SOCKET = START_SOCKET
+
+
 def own_socket() -> str | None:
-    """The socket tsesh's own tmux calls reach, or None when unknown.
+    """The socket tsesh's own tmux calls reach, or None when unknown."""
+    return START_SOCKET or resolve_own_socket()
+
+
+def resolve_own_socket() -> str | None:
+    """The physical socket tsesh's tmux calls would reach now.
 
     Same precedence as the calls themselves: the TSESH_TMUX_SOCKET_* test
     overrides, then the socket in $TMUX (a bare tmux follows it), then the
@@ -2289,6 +2314,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         sub.add_parser("last")
 
         args = parser.parse_args(list(argv) if argv is not None else None)
+        pin_own_server()
 
         if args.cmd == "list":
             return print_entries(args.mode, args.crew)
