@@ -11,7 +11,7 @@ working or waiting. Without murmur that column is blank and everything else work
 
 ## Install
 
-Needs tmux 3.2+, Python 3.11+ and [fzf](https://github.com/junegunn/fzf).
+Needs tmux 3.2+, Python 3.11+ and [fzf](https://github.com/junegunn/fzf) 0.46+.
 [zoxide](https://github.com/ajeetdsouza/zoxide), [fd](https://github.com/sharkdp/fd)
 and [eza](https://github.com/eza-community/eza) are used when present.
 
@@ -56,6 +56,7 @@ Inside the picker:
 | `ctrl-g` | Agents view; again in the agents view: show or hide crew agents |
 | `ctrl-f` | Find view: directory scan under `$HOME` |
 | `ctrl-x` | Kill the highlighted session (session rows only; refuses the session you are in) |
+| `ctrl-/` | Show or hide the preview |
 | `tab` / `shift-tab` | Down / up |
 | `enter` | Switch to the row, creating the session first if needed, or jump to the agent |
 | `esc` / `ctrl-c` | Abort |
@@ -158,6 +159,16 @@ the server and switches to the session if it came back, instead of running
 `new-session`. A restored session therefore skips its configured `startup`
 and `split`: those run only when tsesh creates the session. Plain tmux has no snapshot: `start-server` exits at once and
 nothing changes.
+
+## Layout
+
+The picker fits its columns to the popup. The preview sits right of the list
+from 120 columns, below it from 80, and starts hidden under 80 (`ctrl-/` shows
+it). The name column grows from 16 to 40 cells with the list; a long name keeps
+both ends (`hacking/…/murmur`) and a long path keeps its end (`…/crew/murmur`).
+On a narrow list the window counts go first, then the path. Widths are counted
+in terminal cells, so wide (CJK) names keep the columns aligned. Resizing the
+popup lays the list out again.
 
 ## Session names and directories
 

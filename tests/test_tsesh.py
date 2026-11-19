@@ -158,11 +158,168 @@ class RowRendering(unittest.TestCase):
         self.assertNotIn(State.waiting, tsesh.ATTENTION_STATES)
 
 
+def at_width(testcase, columns):
+    """Render with the layout for a COLUMNS-wide terminal until cleanup."""
+    testcase.addCleanup(setattr, tsesh, "LAYOUT", tsesh.LAYOUT)
+    tsesh.set_layout(columns)
+    return tsesh.LAYOUT
+
+
 class Header(unittest.TestCase):
     def test_legend_shows_every_picker_key(self):
-        legend = ANSI.sub("", tsesh.header_text().splitlines()[0])
-        for key in ("^a", "^s", "^f", "tab", "s-tab", "enter"):
+        legend = ANSI.sub("", "\n".join(tsesh.header_text().splitlines()[:-1]))
+        for key in ("^a", "^s", "^g", "^f", "^x", "tab", "s-tab", "enter"):
             self.assertIn(key, legend)
+
+    def test_legend_fits_or_wraps_at_every_width(self):
+        for columns in (60, 80, 100, 120, 160, 260):
+            with self.subTest(columns=columns):
+                layout = at_width(self, columns)
+                lines = ANSI.sub("", tsesh.header_text()).splitlines()
+                for line in lines:
+                    self.assertLessEqual(tsesh.cell_width(line), layout.row_width)
+                legend = " ".join(lines[:-1])
+                for key in ("^a", "^s", "^g", "^f", "^x", "tab", "enter"):
+                    self.assertIn(key, legend)
+
+
+def long_rows():
+    """Rows with every column filled past any width."""
+    counts = ((State.crashed, 3), (State.blocked, 12), (State.done, 4))
+    return [
+        tsesh.Entry(
+            kind="tmux",
+            name="hacking/crew/some-very-long-project-name/murmur",
+            session_name="x",
+            detail="~/hacking/crew/some/very/deep/directory/tree/murmur",
+            extra="+3",
+            counts="12w 34p",
+            agent_counts=counts,
+            worst_state=State.crashed,
+            is_running=True,
+            marker="current",
+        ),
+        tsesh.Entry(
+            kind="zoxide", name="docs", session_name="docs", path="/opt/" + "d" * 80
+        ),
+        tsesh.Entry(
+            kind="tmux", name="\u732b" * 30, session_name="cat", counts="1w 1p"
+        ),
+    ]
+
+
+class ResponsiveLayout(unittest.TestCase):
+    def test_rows_fit_the_list_at_every_width(self):
+        for columns in (40, 60, 100, 160, 260):
+            with self.subTest(columns=columns):
+                layout = at_width(self, columns)
+                for entry in long_rows():
+                    text = ANSI.sub("", entry.visible_text())
+                    self.assertLessEqual(tsesh.cell_width(text), layout.row_width, text)
+
+    def test_columns_present_by_width(self):
+        expect = {  # columns -> (counts, path, preview)
+            40: (False, False, "hidden"),
+            60: (True, True, "hidden"),
+            100: (True, True, "down"),
+            160: (True, True, "right"),
+            260: (True, True, "right"),
+        }
+        for columns, (counts, path, preview) in expect.items():
+            with self.subTest(columns=columns):
+                layout = at_width(self, columns)
+                self.assertEqual(layout.show_counts, counts)
+                self.assertEqual(bool(layout.path_width), path)
+                self.assertEqual(layout.preview, preview)
+                header = ANSI.sub("", tsesh.header_text().splitlines()[-1])
+                self.assertEqual("windows" in header, counts)
+                row = ANSI.sub("", long_rows()[0].visible_text())
+                self.assertEqual("12w 34p" in row, counts)
+
+    def test_name_grows_with_the_width_and_keeps_both_ends(self):
+        # The list is what the preview leaves, so compare within one placement.
+        widths = [at_width(self, c).name_width for c in (40, 60, 79)]
+        widths += [at_width(self, c).name_width for c in (120, 160, 260, 400)]
+        self.assertEqual(widths[0], 16)
+        self.assertEqual(widths[-1], 40)
+        self.assertEqual(widths[:3], sorted(widths[:3]))
+        self.assertEqual(widths[3:], sorted(widths[3:]))
+        at_width(self, 100)
+        row = ANSI.sub("", long_rows()[0].visible_text())
+        self.assertIn("hacking/\u2026/murmur", row)
+        self.assertIn("\u2026", row.split("murmur", 1)[1])  # path cut at its start
+        self.assertTrue(row.rstrip().endswith("tree/murmur +3"), row)
+
+    def test_wide_labels_keep_the_columns_aligned(self):
+        at_width(self, 160)
+        header = ANSI.sub("", tsesh.header_text().splitlines()[-1])
+        for name in ("plain", "\u732b\u732b", "e\u0301t\u00e9", "\u732b" * 40):
+            with self.subTest(name=name):
+                entry = tsesh.Entry(
+                    kind="tmux",
+                    name=name,
+                    session_name="s",
+                    detail="~/x",
+                    counts="1w 1p",
+                )
+                row = ANSI.sub("", entry.visible_text())
+                before = row[: row.index("1w 1p")]
+                self.assertEqual(tsesh.cell_width(before), header.index("windows"))
+
+    def test_agent_rows_fit_and_drop_host_then_stream(self):
+        panes = [
+            agent_pane(
+                label="\u732b" * 30,
+                workstream="w" * 40,
+                local=False,
+                host="peer-a.invalid",
+            ),
+            agent_pane(label="x", workstream="ws"),
+        ]
+        seen = {}
+        for columns in (40, 60, 100, 160, 260):
+            with self.subTest(columns=columns):
+                layout = at_width(self, columns)
+                rows, _, _ = tsesh.agent_view_entries(panes, crew=False)
+                for row in rows:
+                    text = ANSI.sub("", row.visible_text())
+                    self.assertLessEqual(tsesh.cell_width(text), layout.row_width, text)
+                header = ANSI.sub(
+                    "",
+                    tsesh.header_text("agents", columns=tsesh.AgentColumns(True, True)),
+                )
+                seen[columns] = ("stream" in header, "host" in header)
+        self.assertEqual(seen[260], (True, True))
+        self.assertEqual(seen[40], (False, False))
+        self.assertIn((True, False), seen.values())  # host goes first
+
+    def test_cell_width(self):
+        self.assertEqual(tsesh.cell_width("abc"), 3)
+        self.assertEqual(tsesh.cell_width("\u732b"), 2)
+        self.assertEqual(tsesh.cell_width("e\u0301"), 1)
+        self.assertEqual(tsesh.cell_width(tsesh.STATE_GLYPH[State.done]), 1)
+
+    def test_preview_window_and_toggle_follow_the_width(self):
+        for columns, window in ((70, "hidden"), (100, "down,45%"), (200, "right,55%")):
+            with self.subTest(columns=columns):
+                at_width(self, columns)
+                cmd = tsesh._fzf_command("all")
+                self.assertIn(window, cmd[cmd.index("--preview-window") + 1])
+                binds = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--bind"]
+                self.assertIn("ctrl-/:toggle-preview", binds)
+                self.assertTrue(any(b.startswith("resize:transform:") for b in binds))
+                legend = ANSI.sub("", tsesh.header_text())
+                self.assertEqual("^/ preview" in legend, columns < 80)
+
+    def test_resize_lays_out_the_same_view_again(self):
+        out = io.StringIO()
+        env = {"FZF_PROMPT": "crew \u25c8  ", "FZF_COLUMNS": "70"}
+        with mock_env(env), contextlib.redirect_stdout(out):
+            at_width(self, tsesh.terminal_columns())
+            tsesh.fzf_action("current")
+        actions = out.getvalue()
+        self.assertIn("change-preview-window(down,45%,border-top,hidden)", actions)
+        self.assertIn("list --mode agents --crew", actions)
 
 
 class Version(unittest.TestCase):

@@ -55,6 +55,12 @@ versions follow [SemVer](https://semver.org/).
   windows in other directories; zoxide and scan rows for a directory a live
   session already covers are dropped; the session preview lists every window.
 
+- The picker fits its columns to the popup width: preview right, below or
+  hidden (`ctrl-/` toggles it), a name column of 16 to 40 cells, paths cut at
+  the start, counts and then paths dropped on narrow lists, a key legend that
+  wraps, and a new layout on resize. Widths count terminal cells (CJK names
+  stay aligned). Needs fzf 0.46+.
+
 ### Fixed
 
 - Picker rows escape backslashes, tabs and line breaks in every field, so a

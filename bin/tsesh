@@ -14,8 +14,9 @@ import sys
 import tempfile
 import time
 import tomllib
+import unicodedata
 from collections.abc import Generator, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from functools import cache
 from pathlib import Path
 from shlex import quote as sh_quote
@@ -170,11 +171,152 @@ def start_server_in_own_scope(new_session: tuple[str, ...]) -> bool:
     return result.returncode == 0
 
 
-DISPLAY_NAME_WIDTH = 30
 # Room for three "glyph+count" groups; the header and every row share it.
 STATE_WIDTH = 11
 # Window and pane counts of a live session ("3w 5p").
 COUNTS_WIDTH = 7
+# Agents view columns after the label.
+STREAM_WIDTH = 16
+HOST_WIDTH = 12
+AGE_WIDTH = 4
+# Every row starts with a marker, an icon (or state glyph) and a space.
+PREFIX_WIDTH = 3
+
+
+def cell_width(text: str) -> int:
+    """Terminal cells TEXT takes: wide (CJK) characters two, combining marks
+    and zero-width characters none."""
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in {"Cf", "Mn", "Me"}:
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1
+    return width
+
+
+def fit(text: str, width: int, *, keep: str = "end") -> str:
+    """TEXT in exactly WIDTH cells: padded, or cut with an ellipsis.
+
+    KEEP says what survives a cut: the start ("end": cut the end), the tail
+    ("start": cut the start, for paths), or both ends of a slash-separated
+    name ("middle": hacking/…/murmur).
+    """
+    if width <= 0:
+        return ""
+    if cell_width(text) <= width:
+        return text + " " * (width - cell_width(text))
+    if keep == "middle" and "/" in text:
+        head, _, tail = text.partition("/")
+        tail = tail.rsplit("/", 1)[-1]
+        joined = f"{head}/\u2026/{tail}"
+        if cell_width(joined) <= width:
+            return fit(joined, width)
+        keep = "end"
+    if keep == "start":
+        out = ""
+        for ch in reversed(text):
+            if cell_width(ch + out) > width - 1:
+                break
+            out = ch + out
+        return fit("\u2026" + out, width)
+    out = ""
+    for ch in text:
+        if cell_width(out + ch) > width - 1:
+            break
+        out += ch
+    return fit(out + "\u2026", width)
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Column plan for one terminal width. Rows and header both use it.
+
+    The list gets what the preview leaves: the preview sits right of the list
+    on wide screens, below it under 120 columns, and starts hidden (ctrl-/
+    shows it) under 80. The name column grows from 16 to 40 cells; on narrow
+    lists the counts column goes first, then the path; the state cell shrinks
+    to the strongest groups.
+    """
+
+    columns: int
+
+    @property
+    def preview(self) -> str:
+        if self.columns >= 120:
+            return "right"
+        return "down" if self.columns >= 80 else "hidden"
+
+    @property
+    def preview_window(self) -> str:
+        return {
+            "right": "right,55%,border-left",
+            "down": "down,45%,border-top",
+            "hidden": "down,45%,border-top,hidden",
+        }[self.preview]
+
+    @property
+    def row_width(self) -> int:
+        """Cells a row may take: the list's width less fzf's pointer gutter
+        and scrollbar, and its border and padding outside a popup."""
+        listed = self.columns
+        if self.preview == "right":
+            listed -= math.ceil(self.columns * 0.55) + 1
+        margin = 5 + (4 if fzf_border() == "rounded" else 0)
+        return max(listed - margin, 20)
+
+    @property
+    def name_width(self) -> int:
+        return min(max(int(self.row_width * 0.35), 16), 40)
+
+    @property
+    def _rest(self) -> int:
+        return self.row_width - PREFIX_WIDTH - self.name_width - 1
+
+    @property
+    def state_width(self) -> int:
+        wide = STATE_WIDTH + 1 + COUNTS_WIDTH + 1 + 12
+        return STATE_WIDTH if self._rest >= wide else 5
+
+    @property
+    def show_counts(self) -> bool:
+        return self._rest - self.state_width - 1 >= COUNTS_WIDTH + 1 + 12
+
+    @property
+    def path_width(self) -> int:
+        """Cells for the path (and its "+N" note); 0 drops the column."""
+        width = self._rest - self.state_width - 1
+        width -= (COUNTS_WIDTH + 1) * self.show_counts
+        return width if width >= 8 else 0
+
+    def agent_columns(self, stream: bool, host: bool) -> tuple[bool, bool]:
+        """Which of the agents view's stream and host columns fit; the host
+        column goes first."""
+        room = self._rest - AGE_WIDTH
+        if stream and host and room < STREAM_WIDTH + HOST_WIDTH + 2:
+            host = False
+        if stream and room < STREAM_WIDTH + 1 + (HOST_WIDTH + 1) * host:
+            stream = False
+        if host and room < HOST_WIDTH + 1:
+            host = False
+        return stream, host
+
+
+def terminal_columns() -> int:
+    """fzf's width for reloads and previews ($FZF_COLUMNS), else the
+    terminal's (the popup's, before fzf starts)."""
+    with contextlib.suppress(KeyError, ValueError):
+        return int(os.environ["FZF_COLUMNS"])
+    return shutil.get_terminal_size((160, 40)).columns
+
+
+LAYOUT = Layout(160)
+
+
+def set_layout(columns: int) -> None:
+    global LAYOUT
+    LAYOUT = Layout(columns)
+
+
 DEFAULT_SPLIT = ""
 CONFIG_PATH = Path(
     os.environ.get("TSESH_CONFIG")
@@ -323,19 +465,21 @@ def counts_cell(windows: int, panes: int) -> str:
     return f"{windows}w" if windows <= 99 else "99+w"
 
 
-def state_cell(counts: tuple[tuple[AgentState, int], ...]) -> str:
-    """Per-state agent counts, strongest first, within STATE_WIDTH.
+def state_cell(
+    counts: tuple[tuple[AgentState, int], ...], width: int = STATE_WIDTH
+) -> str:
+    """Per-state agent counts, strongest first, within WIDTH.
 
     No state vanishes silently: groups that do not fit collapse into "+N", the
     number of agents they hold. A count above 99 reads "99+".
     """
     groups = [f"{STATE_GLYPH[st]}{n if n <= 99 else '99+'}" for st, n in counts]
-    if len(" ".join(groups)) <= STATE_WIDTH:
+    if len(" ".join(groups)) <= width:
         return " ".join(groups)
     for keep in range(len(groups) - 1, -1, -1):
         rest = sum(n for _, n in counts[keep:])
         cell = " ".join([*groups[:keep], f"+{rest}"])
-        if len(cell) <= STATE_WIDTH:
+        if len(cell) <= width:
             return cell
     return f"+{sum(n for _, n in counts)}"
 
@@ -369,10 +513,6 @@ class Entry:
         return KIND_ICON[self.kind]
 
     @property
-    def display_name(self) -> str:
-        return truncate(self.name, DISPLAY_NAME_WIDTH)
-
-    @property
     def display_path(self) -> str:
         if self.detail:
             return self.detail
@@ -381,26 +521,29 @@ class Entry:
         return tildify(self.path)
 
     def visible_text(self) -> str:
+        note = self.extra
         if self.text:
             text = self.text
         else:
-            name = self.display_name.ljust(DISPLAY_NAME_WIDTH)
+            layout = LAYOUT
+            name = fit(self.name, layout.name_width, keep="middle")
             ws = self.worst_state
             if self.agent_counts:
-                cell = state_cell(self.agent_counts)
+                cell = state_cell(self.agent_counts, layout.state_width)
             else:
                 cell = STATE_GLYPH[ws] if ws is not None else " "
-            text = f"{self.icon} {name} {cell}"
-            if self.display_path or self.counts:
-                pad = " " * (STATE_WIDTH - len(cell))
-                counts = self.counts.ljust(COUNTS_WIDTH)
-                text = f"{text}{pad}{counts} {self.display_path}".rstrip()
-        note = (
-            " " + ansi_style(self.extra, fg=CATPPUCCIN["overlay0"])
-            if self.extra
-            else ""
-        )
-        return marker_cell(self.marker) + self.styled(text) + note
+            text = f"{self.icon} {name} {fit(cell, layout.state_width)} "
+            if layout.show_counts:
+                text += fit(self.counts, COUNTS_WIDTH) + " "
+            room = layout.path_width - (len(note) + 1 if note else 0)
+            if not layout.path_width or room < 4:
+                note = ""
+            room = layout.path_width - (len(note) + 1 if note else 0)
+            if self.display_path and room > 0:
+                text += fit(self.display_path, room, keep="start")
+            text = text.rstrip()
+        dim = " " + ansi_style(note, fg=CATPPUCCIN["overlay0"]) if note else ""
+        return marker_cell(self.marker) + self.styled(text) + dim
 
     def styled(self, text: str) -> str:
         # Agent states win over the kind colour: a blocked or crashed agent
@@ -485,12 +628,6 @@ class EntryPayload:
             here=fields["here"],
             socket=fields["socket"],
         )
-
-
-def truncate(text: str, width: int) -> str:
-    if len(text) <= width:
-        return text
-    return text[: width - 1] + "…"
 
 
 def ansi_style(
@@ -585,11 +722,6 @@ def prompt_state(prompt: str) -> tuple[str, bool]:
     return views.get(glyph, "all"), crew
 
 
-# Agents view columns after the label.
-STREAM_WIDTH = 16
-HOST_WIDTH = 12
-
-
 @dataclass(frozen=True)
 class AgentColumns:
     stream: bool = False
@@ -611,34 +743,56 @@ def header_text(
         ("agents", "^g crew" if mode == "agents" else "^g agents"),
         ("find", "^f find"),
     ]
-    labels = [
-        ansi_style(label, fg=CATPPUCCIN["sky" if view == mode else "subtext0"])
+    legend = [
+        (label, CATPPUCCIN["sky" if view == mode else "subtext0"])
         for view, label in items
     ]
-    labels.append(ansi_style("^x kill", fg=CATPPUCCIN["subtext0"]))
-    labels += [
-        ansi_style(label, fg=CATPPUCCIN["overlay0"])
-        for label in ("tab/s-tab move", "enter open")
+    legend.append(("^x kill", CATPPUCCIN["subtext0"]))
+    if LAYOUT.preview == "hidden":
+        legend.append(("^/ preview", CATPPUCCIN["subtext0"]))
+    legend += [
+        (label, CATPPUCCIN["overlay0"]) for label in ("tab/s-tab move", "enter open")
     ]
     lines = [notice] if notice else []
-    lines.append("  " + " ".join(labels))
+    lines += legend_lines(legend, LAYOUT.row_width - 2)
     if status:
         lines.append("  " + status)
+    nw = LAYOUT.name_width
     if mode == "agents":
-        columns = columns or AgentColumns()
-        titles = "   " + "agent".ljust(DISPLAY_NAME_WIDTH)
-        if columns.stream:
-            titles += " " + "stream".ljust(STREAM_WIDTH)
-        if columns.host:
-            titles += " " + "host".ljust(HOST_WIDTH)
+        stream, host = LAYOUT.agent_columns(
+            *(astuple(columns) if columns else (False, False))
+        )
+        titles = "   " + fit("agent", nw)
+        if stream:
+            titles += " " + fit("stream", STREAM_WIDTH)
+        if host:
+            titles += " " + fit("host", HOST_WIDTH)
         titles += " age"
     else:
-        titles = (
-            f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(STATE_WIDTH)}"
-            f"{'windows'.ljust(COUNTS_WIDTH)} path"
-        )
-    lines.append(f"{UNDERLINE}{titles}{RESET}")
+        titles = f"   {fit('session', nw)} {fit('state', LAYOUT.state_width)} "
+        if LAYOUT.show_counts:
+            titles += fit("windows", COUNTS_WIDTH) + " "
+        if LAYOUT.path_width:
+            titles += "path"
+    lines.append(f"{UNDERLINE}{titles.rstrip()}{RESET}")
     return "\n".join(lines)
+
+
+def legend_lines(items: list[tuple[str, str]], width: int) -> list[str]:
+    """The key legend, wrapped so no line is wider than WIDTH cells."""
+    lines: list[list[tuple[str, str]]] = [[]]
+    used = 0
+    for label, colour in items:
+        need = len(label) + (1 if lines[-1] else 0)
+        if lines[-1] and used + need > width:
+            lines.append([])
+            used, need = 0, len(label)
+        lines[-1].append((label, colour))
+        used += need
+    return [
+        "  " + " ".join(ansi_style(label, fg=colour) for label, colour in line)
+        for line in lines
+    ]
 
 
 def fzf_border(env: Mapping[str, str] = os.environ) -> str:
@@ -1348,19 +1502,20 @@ def agent_view_entries(
         stream=any(agent_stream(p) for p in shown),
         host=any(not p.get("local") for p in shown),
     )
+    stream_on, host_on = LAYOUT.agent_columns(columns.stream, columns.host)
     counts: dict[AgentState, int] = {}
     rows: list[Entry] = []
     for pane in shown:
         state = pane_state(pane)
         counts[state] = counts.get(state, 0) + 1
-        label = truncate(clean_field(pane.get("label")), DISPLAY_NAME_WIDTH)
-        cells = [f"{STATE_GLYPH[state]} {label.ljust(DISPLAY_NAME_WIDTH)}"]
-        if columns.stream:
-            cells.append(truncate(agent_stream(pane), STREAM_WIDTH).ljust(STREAM_WIDTH))
-        if columns.host:
+        label = fit(clean_field(pane.get("label")), LAYOUT.name_width, keep="middle")
+        cells = [f"{STATE_GLYPH[state]} {label}"]
+        if stream_on:
+            cells.append(fit(agent_stream(pane), STREAM_WIDTH))
+        if host_on:
             host = clean_field(pane.get("host"))
             where = "here" if pane.get("local") else f"\u2192 {host}"
-            cells.append(truncate(where, HOST_WIDTH).ljust(HOST_WIDTH))
+            cells.append(fit(where, HOST_WIDTH))
         cells.append(age_text(pane.get("updated_at")))
         rows.append(agent_entry(pane, text=" ".join(cells).rstrip()))
     return rows, columns, counts
@@ -1760,9 +1915,18 @@ def fzf_action(target: str) -> int:
     mode, crew = prompt_state(os.environ.get("FZF_PROMPT", ""))
     if target == "agents" and mode == "agents":
         crew = not crew
-    print(
-        f"change-prompt({prompt_text(target, crew)})+reload({reload_cmd(target, crew)})"
-    )
+    # "current": the popup was resized. Lay the same view out again, and move
+    # the preview for the new width.
+    resized = target == "current"
+    if resized:
+        target = mode
+    actions = [
+        f"change-prompt({prompt_text(target, crew)})",
+        f"reload({reload_cmd(target, crew)})",
+    ]
+    if resized:
+        actions.insert(0, f"change-preview-window({LAYOUT.preview_window})")
+    print("+".join(actions))
     return 0
 
 
@@ -1842,7 +2006,11 @@ def _fzf_command(
         ]
     cmd += [
         "--preview-window",
-        "right:55%,border-left",
+        LAYOUT.preview_window,
+        "--bind",
+        "ctrl-/:toggle-preview",
+        "--bind",
+        f"resize:transform:{self_cmd} fzf-action current",
         "--preview",
         f"{self_cmd} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}} --socket {{11}}",
     ]
@@ -2454,7 +2622,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         # fzf's transform binding for the view keys; not for people.
         p_action = sub.add_parser("fzf-action")
-        p_action.add_argument("view", choices=MODES)
+        p_action.add_argument("view", choices=[*MODES, "current"])
         sub.add_parser("fzf-enter")
         p_list.add_argument("--prompt", default="", help=argparse.SUPPRESS)
 
@@ -2504,6 +2672,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         args = parser.parse_args(list(argv) if argv is not None else None)
         pin_own_server()
+        set_layout(terminal_columns())
 
         if args.cmd == "list":
             mode, crew = args.mode, args.crew
