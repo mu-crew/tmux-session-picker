@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-19
+
 ### Changed (breaking)
 
 - Picker keymap reworked. Views are now `all` (`ctrl-a`), `sessions`

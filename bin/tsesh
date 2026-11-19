@@ -23,7 +23,7 @@ from shlex import quote as sh_quote
 from typing import TypeGuard
 
 # Bumped by hand at release time; see RELEASING.md.
-VERSION = "1.0.0-dev"
+VERSION = "1.0.0"
 
 
 class AgentState(enum.IntEnum):
