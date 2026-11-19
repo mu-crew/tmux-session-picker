@@ -840,14 +840,20 @@ class NameCollision(unittest.TestCase):
         tsesh.connect(str(link))
         self.assertIn(str(literal), self.session_paths())
         ids = self.tmux_bytes("list-sessions", "-F", "#{session_id}").split()
-        cwds = [
-            os.fsdecode(
-                self.tmux_bytes(
-                    "display-message", "-p", "-t", i, "#{pane_current_path}"
-                )
-            ).removesuffix("\n")
-            for i in ids
-        ]
+        # tmux reports an empty pane_current_path until the pane's process
+        # has started; poll instead of reading it once.
+        for _ in range(100):
+            cwds = [
+                os.fsdecode(
+                    self.tmux_bytes(
+                        "display-message", "-p", "-t", i, "#{pane_current_path}"
+                    )
+                ).removesuffix("\n")
+                for i in ids
+            ]
+            if str(literal) in cwds:
+                break
+            time.sleep(0.05)
         self.assertIn(str(literal), cwds)
 
     def test_session_named_like_an_id_does_not_alias_the_matched_id(self):
