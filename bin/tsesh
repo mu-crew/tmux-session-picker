@@ -1129,29 +1129,40 @@ def pane_cwd(pane_id: str) -> str:
     return result.stdout.removesuffix("\n")
 
 
-def tmux_session_path(name: str) -> str:
-    result = tmux_cmd(
-        "list-sessions", "-F", "#{session_name}\t#{session_path}", check=False
-    )
-    for line in result.stdout.splitlines():
-        session, _, path = line.partition("\t")
-        if session == name:
-            return path
-    return ""
+def live_session_for_path(path: str) -> str | None:
+    """The live session rooted exactly at PATH, if any.
+
+    One display-message per session: a path may hold a newline, which would
+    corrupt a single list-sessions listing.
+    """
+    wanted = Path(path).expanduser().resolve()
+    ids = tmux_cmd("list-sessions", "-F", "#{session_id}", check=False)
+    for session_id in ids.stdout.split():
+        info = tmux_cmd(
+            "display-message",
+            "-p",
+            "-t",
+            session_id,
+            "#{session_name}\t#{session_path}",
+            check=False,
+        )
+        name, _, root = info.stdout.removesuffix("\n").partition("\t")
+        if root and Path(root).resolve() == wanted:
+            return name
+    return None
 
 
 def free_name_for_path(name: str, path: str) -> str:
-    """NAME, or NAME-2, NAME-3... when NAME is a live session for another dir.
+    """The session to use for PATH: the live one rooted there, else a free name.
 
-    Sanitizing maps distinct paths (``a.b`` and ``a_b``) to one name; without
-    this, connecting to the second would switch to the first's session.
+    Sanitizing maps distinct paths (``a.b`` and ``a_b``) to one name, so a
+    free name is NAME, NAME-2, NAME-3... Looking the directory up first keeps
+    one session per directory even when an earlier one was killed.
     """
-    wanted = Path(path).expanduser().resolve()
+    if existing := live_session_for_path(path):
+        return existing
     candidate, n = name, 1
     while backend().exists(candidate):
-        existing = tmux_session_path(candidate)
-        if existing and Path(existing).resolve() == wanted:
-            return candidate
         n += 1
         candidate = f"{name}-{n}"
     return candidate
