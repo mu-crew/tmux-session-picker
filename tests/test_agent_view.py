@@ -44,8 +44,8 @@ class Harness(unittest.TestCase):
         self.murmur.write_text(FAKE_MURMUR)
         self.murmur.chmod(0o755)
         self.sock = self.tmp / "s"
-        self.tmux("new-session", "-d", "-s", "notes")
         self.addCleanup(self.kill)
+        self.tmux("new-session", "-d", "-s", "notes")
         self.pane = self.tmux("list-panes", "-t", "notes", "-F", "#{pane_id}").split()[
             0
         ]
@@ -105,6 +105,7 @@ class Harness(unittest.TestCase):
     def attach(self, session):
         """A real client on the server under test, from a pane of another."""
         host = self.tmp / f"host-{session}"
+        self.addCleanup(self.kill, host)
         self.tmux(
             "new-session",
             "-d",
@@ -113,7 +114,6 @@ class Harness(unittest.TestCase):
             f"env -u TMUX tmux -S {self.sock} attach -t {session}",
             sock=host,
         )
-        self.addCleanup(self.kill, host)
         tty = self.tmux("list-panes", "-F", "#{pane_tty}", sock=host).strip()
         if support.wait_until(
             lambda: tty in self.tmux("list-clients", "-F", "#{client_name}")
@@ -507,8 +507,8 @@ class AgentsKey(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         sock = tmp / "s"
         self.tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
-        subprocess.run([*self.tmux, "new-session", "-d", "-s", "x"], check=True)
         self.addCleanup(support.kill_server, self.tmux)
+        subprocess.run([*self.tmux, "new-session", "-d", "-s", "x"], check=True)
         self.env = dict(os.environ, TMUX=f"{sock},1,0")
 
     def bind(self, *options):
@@ -638,6 +638,7 @@ class NamedSocketAlias(Harness):
         env = {**self.env, "TMUX_TMPDIR": str(tmpdir)}
 
         def server(sock, text):
+            self.addCleanup(self.kill, sock)
             subprocess.run(
                 [
                     "tmux",
@@ -653,7 +654,6 @@ class NamedSocketAlias(Harness):
                 ],
                 check=True,
             )
-            self.addCleanup(self.kill, sock)
             shown = support.wait_until(  # until the pane has printed it
                 lambda: text in self.tmux("capture-pane", "-p", "-t", "srv", sock=sock)
             )
@@ -709,8 +709,8 @@ class NamedSocketAlias(Harness):
 class FailureOnTheInvokingServer(Harness):
     def test_jump_failure_reaches_the_client_server_not_the_override(self):
         other = self.tmp / "other"
-        self.tmux("new-session", "-d", "-s", "data", sock=other)
         self.addCleanup(self.kill, other)
+        self.tmux("new-session", "-d", "-s", "data", sock=other)
         client = self.attach("notes")
         for given, target in ((client, "j2:x"), ("", "j2:y")):
             with self.subTest(client=given):
@@ -818,8 +818,8 @@ class SocketPinnedAtStart(Harness):
         sockdir = Path(os.path.realpath(tmpdir)) / f"tmux-{os.getuid()}"
         sockdir.mkdir(parents=True, mode=0o700)
         physical_a = self.tmp / "a-sock"
-        self.tmux("new-session", "-d", "-s", "SERVER_A", sock=physical_a)
         self.addCleanup(self.kill, physical_a)
+        self.tmux("new-session", "-d", "-s", "SERVER_A", sock=physical_a)
         alias = sockdir / "review"
         alias.symlink_to(physical_a)
         # self.sock is server B; its %0 is in "notes", the client sits elsewhere.

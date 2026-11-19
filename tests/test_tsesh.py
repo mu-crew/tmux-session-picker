@@ -390,8 +390,8 @@ class PopupBinding(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         sock = tmp / "s"
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
-        subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
         self.addCleanup(support.kill_server, tmux)
+        subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
         env = dict(os.environ, TMUX=f"{sock},1,0")
         subprocess.run(
             ["bash", str(TSESH.parent.parent / "tsesh.tmux")], env=env, check=True
@@ -1483,8 +1483,8 @@ class PickerListsOnce(unittest.TestCase):
         os.environ["TSESH_TMUX_SOCKET_PATH"] = str(sock)
         self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_PATH", None)
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
-        subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
         self.addCleanup(support.kill_server, tmux)
+        subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
         calls = []
         real = tsesh.tmux_cmd
 
@@ -1959,8 +1959,8 @@ class RemoteAttachments(FakeMurmur):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.sock = self.tmp / "s"
         self.tmux = ["tmux", "-f", "/dev/null", "-S", str(self.sock)]
-        subprocess.run([*self.tmux, "new-session", "-d", "-s", "lalala"], check=True)
         self.addCleanup(support.kill_server, self.tmux)
+        subprocess.run([*self.tmux, "new-session", "-d", "-s", "lalala"], check=True)
         self.pane = subprocess.run(
             [*self.tmux, "list-panes", "-t", "lalala", "-F", "#{pane_id}"],
             capture_output=True,
@@ -1999,10 +1999,10 @@ class RemoteAttachments(FakeMurmur):
     def test_override_to_another_server_does_not_inherit_the_attachment(self):
         other = self.tmp / "other"
         other_tmux = ["tmux", "-f", "/dev/null", "-S", str(other)]
+        self.addCleanup(support.kill_server, other_tmux)
         subprocess.run(
             [*other_tmux, "new-session", "-d", "-s", "different"], check=True
         )
-        self.addCleanup(support.kill_server, other_tmux)
         self.install([self.remote(attached_pane=self.pane)])
         os.environ["TMUX"] = f"{self.sock},1,0"  # what murmur saw
         os.environ["TSESH_TMUX_SOCKET_PATH"] = str(other)  # what tsesh queries
@@ -2031,6 +2031,7 @@ class StaleSocketAlias(FakeMurmur):
             d.mkdir()
             self.dirs[name] = d
             tmux = ["tmux", "-f", "/dev/null", "-S", str(d / "s")]
+            self.addCleanup(support.kill_server, tmux)
             subprocess.run(
                 [
                     *tmux,
@@ -2042,7 +2043,6 @@ class StaleSocketAlias(FakeMurmur):
                 ],
                 check=True,
             )
-            self.addCleanup(support.kill_server, tmux)
 
             def shown(tmux=tmux, name=name):  # until the pane prints its marker
                 return (
@@ -2306,3 +2306,33 @@ class AgentEnter(FakeMurmur):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHygiene(unittest.TestCase):
+    """A test that starts a tmux server registers its kill first: a start
+    that fails after the server came up must still be cleaned up."""
+
+    def test_kill_cleanup_is_registered_before_the_server_starts(self):
+        import ast
+
+        late = []
+        for path in sorted(ROOT.glob("tests/test_*.py")):
+            source = path.read_text(encoding="utf-8")
+            for node in ast.walk(ast.parse(source)):
+                if (
+                    not isinstance(node, ast.FunctionDef)
+                    or node.name == self._testMethodName
+                ):
+                    continue
+                lines = (ast.get_source_segment(source, node) or "").splitlines()
+                starts = [i for i, line in enumerate(lines) if '"new-session"' in line]
+                kills = [
+                    i
+                    for i, line in enumerate(lines)
+                    if "addCleanup(support.kill_server" in line
+                    or "addCleanup(self.kill" in line
+                    or line.strip().startswith("support.kill_server, ")
+                ]
+                if starts and kills and kills[0] > starts[0]:
+                    late.append(f"{path.name}:{node.lineno} {node.name}")
+        self.assertEqual(late, [], "\n".join(late))
