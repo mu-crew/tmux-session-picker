@@ -657,3 +657,31 @@ class NamedSocketAlias(Harness):
         shown = preview()
         self.assertNotIn("B_CONTENT", shown)
         self.assertIn("host:", shown)
+
+
+class FailureOnTheInvokingServer(Harness):
+    def test_jump_failure_reaches_the_client_server_not_the_override(self):
+        other = self.tmp / "other"
+        self.tmux("new-session", "-d", "-s", "data", sock=other)
+        self.addCleanup(self.tmux, "kill-server", sock=other)
+        client = self.attach("notes")
+        for given, target in ((client, "j2:x"), ("", "j2:y")):
+            with self.subTest(client=given):
+                remote = agent_pane(local=False, host="peer-a", jump_target=target)
+                self.snapshot([remote])
+                args = ["--client", given] if given else []
+                out = self.tsesh(
+                    "pick-and-connect",
+                    "--mode",
+                    "agents",
+                    *args,
+                    pick="agent-a",
+                    FAKE_MURMUR_JUMP_RC="42",
+                    TSESH_TMUX_SOCKET_PATH=str(other),
+                    **self.in_tmux(),
+                )
+                self.assertEqual(out.returncode, 1)
+                self.assertIn(target, out.stderr)
+                here = self.tmux("show-messages")
+                self.assertIn(f"murmur jump {target} failed", here)
+                self.assertNotIn(target, self.tmux("show-messages", sock=other))

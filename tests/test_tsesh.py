@@ -1671,36 +1671,40 @@ class AgentEnter(FakeMurmur):
         with (
             unittest.mock.patch.dict(os.environ, env),
             unittest.mock.patch.object(
-                tsesh, "tmux_cmd", lambda *a, **k: tmux_calls.append(a)
+                tsesh, "client_tmux", lambda *a, **k: tmux_calls.append(a)
             ),
             unittest.mock.patch.object(tsesh, "pause_for_error", lambda: None),
             contextlib.redirect_stderr(io.StringIO()),
         ):
             self.assertEqual(self.pick(entry, client="/dev/pts/7"), 1)
-        shown = [c for c in tmux_calls if c[0] == "display-message"]
+        shown = [
+            c for c in tmux_calls if c[:1] == ("display-message",) and "-p" not in c
+        ]
         self.assertEqual(len(shown), 1, tmux_calls)
         self.assertEqual(shown[0][1:3], ("-c", "/dev/pts/7"))
 
     def test_failed_jump_stays_visible_in_a_popup(self):
         entry = self.agent_entry(server={"kind": "label", "value": "private"})
         paused, tmux_calls = [], []
-        real = tsesh.tmux_cmd
-
-        def spy(*args, **kw):
-            tmux_calls.append(args)
-            return real(*args, **kw) if args[0] != "display-message" else None
-
         env = {"FAKE_MURMUR_JUMP_RC": "1", "TMUX": "/nowhere/sock,1,0"}
         with (
             unittest.mock.patch.dict(os.environ, env),
-            unittest.mock.patch.object(tsesh, "tmux_cmd", spy),
+            unittest.mock.patch.object(
+                tsesh,
+                "client_tmux",
+                lambda *a: (
+                    tmux_calls.append(a) or subprocess.CompletedProcess(a, 1, b"", b"")
+                ),
+            ),
             unittest.mock.patch.object(
                 tsesh, "pause_for_error", lambda: paused.append(1)
             ),
             contextlib.redirect_stderr(io.StringIO()) as err,
         ):
             self.assertEqual(self.pick(entry), 1)
-        shown = [c for c in tmux_calls if c[0] == "display-message"]
+        shown = [
+            c for c in tmux_calls if c[:1] == ("display-message",) and "-p" not in c
+        ]
         self.assertEqual(len(shown), 1, tmux_calls)
         self.assertIn("j1:abc", " ".join(shown[0]))
         self.assertIn("jump", err.getvalue())

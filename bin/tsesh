@@ -2155,10 +2155,11 @@ def resolve_invoker(given: str = "") -> tuple[str | None, str, str]:
         result = tmux_bytes("display-message", "-p", "-t", client, where)
         fields = [client]
     else:
-        # In a pane (not a popup) $TMUX_PANE is where the picker runs.
+        # In a pane (not a popup) $TMUX_PANE is where the picker runs. Asked
+        # of the server the client is on; inside, that is tsesh's own.
         own_pane = os.environ.get("TMUX_PANE", "")
         target = ["-t", own_pane] if inside and _is_pane_id(own_pane) else []
-        result = tmux_bytes(
+        result = client_tmux(
             "display-message", "-p", *target, f"#{{client_name}}\t{where}"
         )
         fields = []
@@ -2172,13 +2173,27 @@ def resolve_invoker(given: str = "") -> tuple[str | None, str, str]:
     return name or None, pane, session
 
 
+def client_tmux(*args: str) -> subprocess.CompletedProcess[bytes]:
+    """tmux on the server the invoking client is on: the socket in $TMUX.
+
+    Never the TSESH_TMUX_SOCKET_* override or a pinned socket: a client name
+    only means something on its own server.
+    """
+    socket = os.environ.get("TMUX", "").split(",")[0]
+    return subprocess.run(
+        ["tmux", *(["-S", socket] if socket else []), *args],
+        check=False,
+        capture_output=True,
+    )
+
+
 def report_failure(message: str) -> None:
     """Make a failure readable after a popup closes: stderr, a tmux message on
     the invoking client when in tmux, and a short pause on a tty."""
     print(message, file=sys.stderr)
     if os.environ.get("TMUX"):
         target = ["-c", INVOKING_CLIENT] if INVOKING_CLIENT else []
-        tmux_cmd("display-message", *target, "-d", "5000", message, check=False)
+        client_tmux("display-message", *target, "-d", "5000", message)
     pause_for_error()
 
 
