@@ -964,6 +964,19 @@ def valid_peer(peer: object) -> bool:
     )
 
 
+def utf8_clean(data: object) -> bool:
+    """Every string in a parsed document, keys included, encodes as UTF-8.
+
+    JSON may carry a lone surrogate (``"\\ud800"``) that no output stream
+    can write; one such string rejects the snapshot rather than a later print.
+    """
+    try:
+        json.dumps(data, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class Snapshot:
     panes: list[dict]
@@ -1005,6 +1018,8 @@ def murmur_snapshot() -> tuple[Snapshot | None, str]:
     except subprocess.TimeoutExpired:
         return None, SLOW_MURMUR
     except (OSError, ValueError):
+        return None, OLD_MURMUR
+    if not utf8_clean(data):
         return None, OLD_MURMUR
     panes = data.get("panes") if isinstance(data, dict) else None
     peers = data.get("peers", []) if isinstance(data, dict) else None

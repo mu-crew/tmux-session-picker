@@ -410,6 +410,28 @@ class MurmurUnavailable(Harness):
                 Path(self.env["FAKE_MURMUR_JSON"]).write_text(json.dumps(doc))
                 self.assertIn("murmur too old", self.header())
 
+    def test_unencodable_strings_reject_the_whole_snapshot(self):
+        self.tmux("set-option", "-t", "notes", "@murmur_session_state", "blocked")
+        lone = "bad\ud800"  # a lone surrogate: valid JSON, not valid UTF-8
+        cases = (
+            [self.own(render_state="done"), self.own(label=lone)],
+            [self.own(workstream=lone)],
+            [self.own(window_name=lone)],
+            [self.own(), {**self.own(), "extra": lone}],
+        )
+        for panes in cases:
+            with self.subTest(panes=panes[-1]):
+                self.snapshot(panes)
+                out = self.tsesh("list", "--mode", "all", **self.in_tmux())
+                self.assertEqual((out.returncode, out.stderr), (0, ""))
+                rows = out.stdout.splitlines()
+                self.assertNotIn("agent", self.kinds(rows))
+                notes = next(r for r in rows if r.split("\t")[2] == "notes")
+                self.assertIn(G[S.blocked], plain(notes))  # legacy option
+                self.assertIn("murmur too old", self.header())
+        self.snapshot([self.own()], peers=[{"name": lone, "needs_session": True}])
+        self.assertIn("murmur too old", self.header())
+
 
 class SessionNotice(Harness):
     def test_a_peer_needing_a_session_leads_the_header(self):
