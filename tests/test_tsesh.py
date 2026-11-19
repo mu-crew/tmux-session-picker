@@ -1340,6 +1340,31 @@ class MurmurRows(FakeMurmur):
         self.assertIn("+2", text)  # the two weakest groups, counted not hidden
         self.assertNotIn(tsesh.STATE_GLYPH[State.working], text)
 
+    def test_idle_agents_are_counted_not_dropped(self):
+        idle = tsesh.STATE_GLYPH[State.idle]
+        self.install([agent_pane(pane="%1", render_state="idle")])
+        notes = next(e for e in self.rows() if e.name == "notes")
+        self.assertIn(f"{idle}1", ANSI.sub("", notes.visible_text()))
+        self.assertIsNone(notes.worst_state)  # idle never colours a row
+        self.install(
+            [
+                agent_pane(pane="%1", render_state="working"),
+                agent_pane(pane="%2", render_state="idle"),
+            ]
+        )
+        notes = next(e for e in self.rows() if e.name == "notes")
+        text = ANSI.sub("", notes.visible_text())
+        self.assertIn(f"{tsesh.STATE_GLYPH[State.working]}1 {idle}1", text)
+
+    def test_idle_joins_the_overflow_marker(self):
+        states = ["crashed", "error", "blocked", "done", "idle"]
+        self.install(
+            [agent_pane(pane=f"%{i}", render_state=st) for i, st in enumerate(states)]
+        )
+        notes = next(e for e in self.rows() if e.name == "notes")
+        self.assertEqual(sum(n for _, n in notes.agent_counts), 5)
+        self.assertIn("+2", ANSI.sub("", notes.visible_text()))
+
     def test_counts_over_99_say_so(self):
         entry = tsesh.Entry(
             kind="tmux",

@@ -31,6 +31,7 @@ class AgentState(enum.IntEnum):
     Without murmur the option is unset and every row has no state.
     """
 
+    idle = 0  # counted in a session's breakdown; the option never yields it
     waiting = 1
     working = 2
     done = 3
@@ -41,9 +42,11 @@ class AgentState(enum.IntEnum):
     @classmethod
     def parse(cls, raw: str) -> AgentState | None:
         try:
-            return cls[raw]
+            state = cls[raw]
         except KeyError:
             return None
+        # An idle session shows no state, as before; only counts mention idle.
+        return None if state is cls.idle else state
 
 
 # THEME BEGIN: tsesh-state-glyphs
@@ -55,6 +58,7 @@ STATE_GLYPH: dict[AgentState, str] = {
     AgentState.done: "\uf058",  # fa-check-circle
     AgentState.working: "\uf04b",  # fa-play
     AgentState.waiting: "\uf252",  # fa-hourglass-half
+    AgentState.idle: "\uf186",  # fa-moon-o
 }
 # THEME END: tsesh-state-glyphs
 
@@ -316,7 +320,7 @@ class Entry:
         if self.agent_counts:
             cell = state_cell(self.agent_counts)
         else:
-            cell = STATE_GLYPH[ws] if ws else " "
+            cell = STATE_GLYPH[ws] if ws is not None else " "
         text = f"{self.icon}  {name} {cell}"
         if self.display_path:
             text = f"{text}{' ' * (STATE_WIDTH - len(cell))}{self.display_path}"
@@ -989,7 +993,8 @@ def agent_entries(
     offer_rows: bool | None = None  # probed lazily, once
     attached_cache: dict[str, str | None] = {}
     for pane in panes:
-        state = AgentState.parse(str(pane.get("render_state", "")))
+        raw_state = str(pane.get("render_state", ""))
+        state = AgentState.idle if raw_state == "idle" else AgentState.parse(raw_state)
         is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
         session = clean_field(pane.get("session_name"))
         counted = session if is_here else None
@@ -1047,7 +1052,10 @@ def build_entries(
     if mode in {"all", "sessions"} and (panes := murmur_panes()) is not None:
         agent_rows, session_counts = agent_entries(panes, live)
         for name, per in session_counts.items():
-            strongest = max(per)
+            active = [st for st in per if st is not AgentState.idle]
+            if not active:
+                continue  # idle agents never colour a row
+            strongest = max(active)
             if states.get(name) is None or states[name] < strongest:
                 states[name] = strongest
         if mode == "all":

@@ -75,7 +75,9 @@ with sensible filters. Copy [examples/config.toml](examples/config.toml) to
 tsesh reads one tmux option per session, `@murmur_session_state`, in a single
 `list-sessions` call. murmur keeps it at the strongest state among the
 session's agents. Any tool can set it; the values are `crashed`, `error`,
-`blocked`, `done`, `working` and `waiting`.
+`blocked`, `done`, `working` and `waiting`. murmur also reports `idle` (a
+stopped agent with nothing pending); tsesh only counts those in the breakdown
+of a session row, and an idle session shows no state.
 
 ### Richer view with a current murmur
 
