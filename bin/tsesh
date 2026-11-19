@@ -134,25 +134,6 @@ def start_server_in_own_scope(new_session: tuple[str, ...]) -> bool:
     return result.returncode == 0
 
 
-def session_states() -> dict[str, AgentState]:
-    """Every live session's agent state, in one tmux call."""
-    result = tmux_cmd(
-        "list-sessions",
-        "-F",
-        "#{session_name}\t#{@murmur_session_state}",
-        check=False,
-    )
-    if result.returncode != 0:
-        return {}
-    states: dict[str, AgentState] = {}
-    for line in result.stdout.splitlines():
-        name, _, raw = line.partition("\t")
-        state = AgentState.parse(raw)
-        if state is not None:
-            states[name] = state
-    return states
-
-
 DISPLAY_NAME_WIDTH = 30
 DEFAULT_SPLIT = ""
 CONFIG_PATH = Path(
@@ -640,7 +621,7 @@ def load_config() -> Config:
     )
 
 
-def effective_initial_mode(mode: str) -> str:
+def effective_initial_mode(mode: str, live: Mapping[str, object]) -> str:
     """Resolve the picker's *opening* mode, applying the live-session threshold.
 
     Only `all` (the default landing view) is eligible for auto-switching; if
@@ -653,7 +634,7 @@ def effective_initial_mode(mode: str) -> str:
     threshold = load_config().live_session_threshold
     if threshold <= 0:
         return mode
-    if len(backend().list_sessions()) >= threshold:
+    if len(live) >= threshold:
         return "tmux"
     return mode
 
@@ -690,14 +671,18 @@ def build_path_entries(
     return entries
 
 
-def build_entries(mode: str) -> list[Entry]:
+def build_entries(
+    mode: str, live: Mapping[str, AgentState | None] | None = None
+) -> list[Entry]:
     config = load_config()
     configured_sessions = config.sessions
     sessions_by_name = {session.name: session for session in configured_sessions}
     configured_paths = {expand(session.path) for session in configured_sessions}
-    live_names = set(backend().list_sessions())
     # One list-sessions call; murmur keeps @murmur_session_state current.
-    states = session_states()
+    if live is None:
+        live = backend().live_sessions()
+    live_names = set(live)
+    states = live
     entries: list[Entry] = []
 
     if mode in {"all", "default"}:
@@ -946,8 +931,9 @@ def run_fzf(
     mode: str, query: str, *, capture: bool
 ) -> subprocess.CompletedProcess[str]:
     backend().ensure_server()
-    mode = effective_initial_mode(mode)
-    entries = "\n".join(entry.to_fzf_row() for entry in build_entries(mode))
+    live = backend().live_sessions()
+    mode = effective_initial_mode(mode, live)
+    entries = "\n".join(entry.to_fzf_row() for entry in build_entries(mode, live))
     return subprocess.run(
         _fzf_command(mode, query=query),
         input=entries,
@@ -991,11 +977,22 @@ def update_last(name: str) -> None:
 class TmuxBackend:
     """tmux sessions. A class so tests can stub one method at a time."""
 
-    def list_sessions(self) -> list[str]:
-        result = tmux_cmd("list-sessions", "-F", "#{session_name}", check=False)
+    def live_sessions(self) -> dict[str, AgentState | None]:
+        """Live session -> strongest murmur state, in one list-sessions call."""
+        result = tmux_cmd(
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{@murmur_session_state}",
+            check=False,
+        )
         if result.returncode != 0:
-            return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            return {}
+        live: dict[str, AgentState | None] = {}
+        for line in result.stdout.splitlines():
+            name, _, raw = line.partition("\t")
+            if name.strip():
+                live[name] = AgentState.parse(raw)
+        return live
 
     def exists(self, name: str) -> bool:
         return (

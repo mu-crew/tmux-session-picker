@@ -344,23 +344,24 @@ class BuildEntries(unittest.TestCase):
         cfg = config(sessions=configured, find_max_depth=1)
         originals = (
             tsesh.load_config,
-            tsesh.TmuxBackend.list_sessions,
-            tsesh.session_states,
+            tsesh.TmuxBackend.live_sessions,
             tsesh.zoxide_paths,
         )
 
         def restore():
             (
                 tsesh.load_config,
-                tsesh.TmuxBackend.list_sessions,
-                tsesh.session_states,
+                tsesh.TmuxBackend.live_sessions,
                 tsesh.zoxide_paths,
             ) = originals
 
         self.addCleanup(restore)
         tsesh.load_config = lambda: cfg
-        tsesh.TmuxBackend.list_sessions = lambda self: ["zed", "notes", "alpha"]
-        tsesh.session_states = lambda: {"notes": State.blocked, "zed": State.crashed}
+        tsesh.TmuxBackend.live_sessions = lambda self: {
+            "zed": State.crashed,
+            "notes": State.blocked,
+            "alpha": None,
+        }
         tsesh.zoxide_paths = list
 
     def test_all_mode(self):
@@ -389,7 +390,7 @@ class BuildEntries(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
 class LiveTmux(unittest.TestCase):
-    """session_states against a real, isolated tmux server."""
+    """live_sessions against a real, isolated tmux server."""
 
     def setUp(self):
         self.socket = f"tsesh-test-{os.getpid()}"
@@ -408,11 +409,11 @@ class LiveTmux(unittest.TestCase):
     def test_reads_murmur_session_state(self):
         self.tmux("set-option", "-t", "busy", "@murmur_session_state", "blocked")
         self.tmux("set-option", "-t", "odd", "@murmur_session_state", "bogus")
-        self.assertEqual(tsesh.session_states(), {"busy": State.blocked})
+        self.assertEqual(tsesh.TmuxBackend().live_sessions()["busy"], State.blocked)
 
     def test_no_server_is_no_state(self):
         os.environ["TSESH_TMUX_SOCKET_NAME"] = f"{self.socket}-absent"
-        self.assertEqual(tsesh.session_states(), {})
+        self.assertEqual(tsesh.TmuxBackend().live_sessions(), {})
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
@@ -600,22 +601,19 @@ class PickerStartsServer(unittest.TestCase):
         fake = FakeServer(restores={"work"}).patched(self)
         listed = []
 
-        def list_sessions(self):
+        def live_sessions(self):
             listed.append(sorted(fake.sessions if fake.running else []))
-            return listed[-1]
+            return dict.fromkeys(listed[-1])
 
-        old = tsesh.TmuxBackend.list_sessions
-        tsesh.TmuxBackend.list_sessions = list_sessions
-        self.addCleanup(setattr, tsesh.TmuxBackend, "list_sessions", old)
+        old = tsesh.TmuxBackend.live_sessions
+        tsesh.TmuxBackend.live_sessions = live_sessions
+        self.addCleanup(setattr, tsesh.TmuxBackend, "live_sessions", old)
         old_load = tsesh.load_config
         tsesh.load_config = lambda: config()
         self.addCleanup(setattr, tsesh, "load_config", old_load)
         old_run = tsesh.subprocess.run
         tsesh.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 1)
         self.addCleanup(setattr, tsesh.subprocess, "run", old_run)
-        old_states = tsesh.session_states
-        tsesh.session_states = dict
-        self.addCleanup(setattr, tsesh, "session_states", old_states)
 
         tsesh.pick_and_connect("tmux")
         self.assertEqual(fake.calls[0], ("scope", "start-server"))
@@ -650,11 +648,11 @@ class PlainTmuxNoRestore(unittest.TestCase):
 
     def test_ensure_server_leaves_no_sessions(self):
         tsesh.TmuxBackend().ensure_server()
-        self.assertEqual(tsesh.TmuxBackend().list_sessions(), [])
+        self.assertEqual(tsesh.TmuxBackend().live_sessions(), {})
 
     def test_create_makes_the_session(self):
         tsesh.TmuxBackend().create("first", "/", None)
-        self.assertEqual(tsesh.TmuxBackend().list_sessions(), ["first"])
+        self.assertEqual(list(tsesh.TmuxBackend().live_sessions()), ["first"])
 
 
 class UserManagerCgroup(unittest.TestCase):
@@ -732,11 +730,11 @@ class ServerScope(unittest.TestCase):
     def test_second_session_joins_running_server(self):
         tsesh.TmuxBackend().create("first", "/", None)
         tsesh.TmuxBackend().create("second", "/", None)
-        self.assertEqual(tsesh.TmuxBackend().list_sessions(), ["first", "second"])
+        self.assertEqual(list(tsesh.TmuxBackend().live_sessions()), ["first", "second"])
 
     def test_dollar_in_name_reaches_tmux_verbatim(self):
         tsesh.TmuxBackend().create("literal-${USER}", "/", None)
-        self.assertEqual(tsesh.TmuxBackend().list_sessions(), ["literal-${USER}"])
+        self.assertEqual(list(tsesh.TmuxBackend().live_sessions()), ["literal-${USER}"])
 
 
 if __name__ == "__main__":
