@@ -5,17 +5,6 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- The preview is faster: a live session's preview takes one tmux call instead
-  of five, and the built-in directory listing runs without a login shell. A
-  `preview_command` set in the config still runs in `sh -l`.
-
-### Fixed
-
-- A live session's preview names the session and its attached clients again
-  on its first line; on recent tmux that line was blank.
-
 ## [1.0.0] - 2026-11-19
 
 ### Changed (breaking)
@@ -27,6 +16,12 @@ versions follow [SemVer](https://semver.org/).
   `all`, `sessions`, `find` or `agents`; the old values `default`, `tmux` and
   `zoxide` are rejected.
 - The picker header now lists `tab`/`shift-tab` and `enter` too.
+
+### Changed
+
+- The preview is faster: a live session's preview takes one tmux call instead
+  of five, and the built-in directory listing runs without a login shell. A
+  `preview_command` set in the config still runs in `sh -l`.
 
 ### Added
 
@@ -82,6 +77,8 @@ versions follow [SemVer](https://semver.org/).
 
 ### Fixed
 
+- A live session's preview names the session and its attached clients again
+  on its first line; on recent tmux that line was blank.
 - Sourcing `tsesh.tmux` again releases a key it bound before when its option
   changed or became `""`; keys the user rebound are left alone. The bindings
   work from a plugin directory with spaces, quotes, `#` or `$` in its path.
@@ -120,3 +117,4 @@ versions follow [SemVer](https://semver.org/).
   and `split`.
 - A symlink retargeted after its session was created still reaches that
   session when connected through the same symlink string.
+
