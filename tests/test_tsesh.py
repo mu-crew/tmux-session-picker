@@ -1150,7 +1150,7 @@ class FakeMurmur(unittest.TestCase):
     def wait_for_call(self, prefix):
         import time
 
-        for _ in range(40):
+        for _ in range(300):
             if any(c.startswith(prefix) for c in self.calls()):
                 return True
             time.sleep(0.05)

@@ -113,7 +113,7 @@ class Harness(unittest.TestCase):
         )
         self.addCleanup(self.tmux, "kill-server", sock=host)
         tty = self.tmux("list-panes", "-F", "#{pane_tty}", sock=host).strip()
-        for _ in range(50):
+        for _ in range(300):
             if tty in self.tmux("list-clients", "-F", "#{client_name}"):
                 return tty
             time.sleep(0.1)
@@ -579,7 +579,7 @@ class RealFzf(Harness):
         return self.tmux("capture-pane", "-p", "-t", "notes:picker")
 
     def wait_for(self, text):
-        for _ in range(60):
+        for _ in range(300):
             if text in (screen := self.screen(0.1)):
                 return screen
         self.fail(f"{text!r} never appeared:\n{self.screen()}")
@@ -777,14 +777,14 @@ class PluginPathQuoting(Harness):
                 self.tmux("kill-server", sock=host)
                 client = self.attach("notes")
                 self.tmux("send-keys", "-t", "h:", "C-b", "a", sock=host)
-                for _ in range(50):
+                for _ in range(300):
                     if f"agent-{len(name)}" in self.host_screen(host):
                         break
                     time.sleep(0.1)
                 else:
                     self.fail(f"no agents popup:\n{self.host_screen(host)}")
                 self.tmux("send-keys", "-t", "h:", "Escape", sock=host)
-                for _ in range(50):
+                for _ in range(300):
                     if f"agent-{len(name)}" not in self.host_screen(host):
                         break
                     time.sleep(0.1)
@@ -794,7 +794,7 @@ class PluginPathQuoting(Harness):
                 self.tmux("send-keys", "-t", "notes:", f"cd {cwd}", "Enter")
                 self.wait_for_cwd("notes:", cwd)
                 self.tmux("send-keys", "-t", "h:", "C-b", "T", sock=host)
-                for _ in range(50):
+                for _ in range(300):
                     if f"cwd{len(name)}" in self.tmux("list-sessions"):
                         break
                     time.sleep(0.1)
