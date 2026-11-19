@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # TPM entry point. Binds under the prefix; override a key before TPM runs:
 #   set -g @tsesh_key_pick s     # picker popup
+#   set -g @tsesh_key_agents a   # picker popup, agents view
 #   set -g @tsesh_key_last g     # last session
 #   set -g @tsesh_key_root T     # session rooted at the pane's cwd
 # Set a key to "" to leave it unbound.
@@ -21,6 +22,7 @@ opt() {
 }
 
 pick=$(opt @tsesh_key_pick s)
+agents=$(opt @tsesh_key_agents a)
 last=$(opt @tsesh_key_last g)
 root=$(opt @tsesh_key_root T)
 
@@ -30,6 +32,8 @@ root=$(opt @tsesh_key_root T)
 # path or "client-N": nothing a shell would split.
 [[ -n $pick ]] && tmux bind-key -N "session picker (tsesh)" "$pick" \
 	run-shell -b "tmux display-popup -E -c '#{client_name}' -w 90% -h 85% \"'$tsesh' pick-and-connect --client '#{client_name}'\""
+[[ -n $agents ]] && tmux bind-key -N "agent picker (tsesh)" "$agents" \
+	run-shell -b "tmux display-popup -E -c '#{client_name}' -w 90% -h 85% \"'$tsesh' pick-and-connect --mode agents --client '#{client_name}'\""
 [[ -n $last ]] && tmux bind-key -N "last session (tsesh)" "$last" \
 	run-shell -b "'$tsesh' last"
 # #{pane_id} only: run-shell hands the expanded line to sh -c, and a path

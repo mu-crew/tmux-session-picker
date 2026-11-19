@@ -454,8 +454,8 @@ class BuildEntries(unittest.TestCase):
             ["dotfiles", "notes", "alpha", "zed"],
         )
 
-    def test_modes_are_all_sessions_find(self):
-        self.assertEqual(tsesh.MODES, ["all", "sessions", "find"])
+    def test_modes_are_all_sessions_find_agents(self):
+        self.assertEqual(tsesh.MODES, ["all", "sessions", "find", "agents"])
 
 
 class PickerKeys(unittest.TestCase):
@@ -936,7 +936,7 @@ class PickerListsOnce(unittest.TestCase):
         for owner, attr, value in (
             (tsesh, "tmux_cmd", spy),
             (tsesh, "load_config", lambda: config()),
-            (tsesh, "_fzf_command", lambda mode, query="": ["true"]),
+            (tsesh, "_fzf_command", lambda mode, query="", **kw: ["true"]),
         ):
             self.addCleanup(setattr, owner, attr, getattr(owner, attr))
             setattr(owner, attr, value)
@@ -1080,6 +1080,11 @@ if args[:1] == ["jump"]:
 """
 
 
+def murmur_panes():
+    snapshot, _ = tsesh.murmur_snapshot()
+    return snapshot.panes if snapshot else None
+
+
 def agent_pane(**over):
     pane = {
         "pane": "%1",
@@ -1097,6 +1102,7 @@ def agent_pane(**over):
         "jump_target": "j1:abc",
         "updated_at": None,
         "attached_pane": None,
+        "workstream": None,
     }
     pane.update(over)
     return pane
@@ -1148,30 +1154,30 @@ class FakeMurmur(unittest.TestCase):
 
 class MurmurProbe(FakeMurmur):
     def test_no_murmur_means_no_snapshot(self):
-        self.assertIsNone(tsesh.murmur_panes())  # TSESH_MURMUR is nonexistent
+        self.assertIsNone(murmur_panes())  # TSESH_MURMUR is nonexistent
 
     def test_capable_murmur_gives_panes_and_warms_the_cache(self):
         self.install([agent_pane()])
-        panes = tsesh.murmur_panes()
+        panes = murmur_panes()
         self.assertEqual([p["label"] for p in panes], ["agent-a"])
         self.assertIn("status --json --cached", self.calls())
         self.assertTrue(self.wait_for_call("collect --quiet --floored"))
 
     def test_old_murmur_without_cached_is_ignored(self):
         self.install([agent_pane()], mode="old")
-        self.assertIsNone(tsesh.murmur_panes())
+        self.assertIsNone(murmur_panes())
         self.assertFalse(any(c.startswith("collect") for c in self.calls()))
 
     def test_panes_without_derived_fields_are_ignored(self):
         pane = agent_pane()
         del pane["render_state"]
         self.install([pane])
-        self.assertIsNone(tsesh.murmur_panes())
+        self.assertIsNone(murmur_panes())
 
     def test_slow_murmur_times_out(self):
         self.install([agent_pane()], mode="slow")
         with unittest.mock.patch.dict(os.environ, {"TSESH_MURMUR_TIMEOUT": "0.2"}):
-            self.assertIsNone(tsesh.murmur_panes())
+            self.assertIsNone(murmur_panes())
 
 
 class MurmurSnapshotValidation(FakeMurmur):
@@ -1189,7 +1195,7 @@ class MurmurSnapshotValidation(FakeMurmur):
 
     def assert_legacy(self, pane):
         self.install([pane])
-        self.assertIsNone(tsesh.murmur_panes())
+        self.assertIsNone(murmur_panes())
         entries = tsesh.build_entries("all")
         self.assertFalse([e for e in entries if e.kind == "agent"])
         notes = next(e for e in entries if e.name == "notes")
@@ -1252,14 +1258,14 @@ class MurmurSnapshotValidation(FakeMurmur):
             .replace('"updated_at": null', '"updated_at": NaN')
         )
         (self.dir / "status.json").write_text(raw)
-        self.assertIsNone(tsesh.murmur_panes())
+        self.assertIsNone(murmur_panes())
         entries = tsesh.build_entries("sessions")
         self.assertEqual(entries[0].worst_state, State.blocked)
 
     def test_non_object_snapshot_falls_back(self):
         self.install([])
         (self.dir / "status.json").write_text("[]")
-        self.assertIsNone(tsesh.murmur_panes())
+        self.assertIsNone(murmur_panes())
 
 
 class MurmurRows(FakeMurmur):
@@ -1720,6 +1726,9 @@ class AgentEnter(FakeMurmur):
         subprocess.run([*tmux, "select-window", "-t", "notes:0"], check=True)
         server = {"kind": "path", "value": str(sock)}
         entry = self.agent_entry(socket=sock, pane=target, server=server)
+        inside = unittest.mock.patch.dict(os.environ, {"TMUX": f"{sock},1,0"})
+        inside.start()
+        self.addCleanup(inside.stop)
         switched = []
         with unittest.mock.patch.object(
             tsesh.TmuxBackend,

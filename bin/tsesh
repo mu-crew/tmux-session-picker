@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from collections.abc import Iterable, Iterator, Mapping
@@ -281,6 +282,20 @@ FZF_ROW_FIELDS: tuple[str, ...] = (
 )
 
 
+# First column of every row: where the invoking client is, and sessions other
+# clients have attached.
+CURRENT_MARK = "◆"
+ATTACHED_MARK = "◇"
+
+
+def marker_cell(marker: str) -> str:
+    if marker == "current":
+        return ansi_style(CURRENT_MARK, fg=CATPPUCCIN["text"], bold=True)
+    if marker == "attached":
+        return ansi_style(ATTACHED_MARK, fg=CATPPUCCIN["overlay0"])
+    return " "
+
+
 def state_cell(counts: tuple[tuple[AgentState, int], ...]) -> str:
     """Per-state agent counts, strongest first, within STATE_WIDTH.
 
@@ -316,6 +331,8 @@ class Entry:
     here: str = ""
     socket: str = ""
     detail: str = ""  # shown where a path would be (agent rows)
+    marker: str = ""  # "current", "attached" or "": see marker_cell
+    text: str = ""  # pre-rendered columns (agents view); replaces the layout
 
     @property
     def icon(self) -> str:
@@ -334,15 +351,21 @@ class Entry:
         return tildify(self.path)
 
     def visible_text(self) -> str:
-        name = self.display_name.ljust(DISPLAY_NAME_WIDTH)
-        ws = self.worst_state
-        if self.agent_counts:
-            cell = state_cell(self.agent_counts)
+        if self.text:
+            text = self.text
         else:
-            cell = STATE_GLYPH[ws] if ws is not None else " "
-        text = f"{self.icon}  {name} {cell}"
-        if self.display_path:
-            text = f"{text}{' ' * (STATE_WIDTH - len(cell))}{self.display_path}"
+            name = self.display_name.ljust(DISPLAY_NAME_WIDTH)
+            ws = self.worst_state
+            if self.agent_counts:
+                cell = state_cell(self.agent_counts)
+            else:
+                cell = STATE_GLYPH[ws] if ws is not None else " "
+            text = f"{self.icon} {name} {cell}"
+            if self.display_path:
+                text = f"{text}{' ' * (STATE_WIDTH - len(cell))}{self.display_path}"
+        return marker_cell(self.marker) + self.styled(text)
+
+    def styled(self, text: str) -> str:
         # Agent states win over the kind colour: a blocked or crashed agent
         # must still show when the session is also pinned or live.
         if style := STATE_STYLE.get(self.worst_state):
@@ -481,29 +504,101 @@ def expand(path: str) -> str:
 
 
 # Which row kind's icon marks each non-"all" view.
-MODE_KIND = {"sessions": "tmux", "find": "find"}
+MODE_KIND = {"sessions": "tmux", "find": "find", "agents": "agent"}
+
+# Leads the prompt while orchestrated (crew) agents are shown. The prompt is
+# the toggle's only state: fzf hands it to a binding as $FZF_PROMPT, so it
+# survives view switches (see fzf_action).
+CREW_MARK = "crew "
+
+# Prompt colour per state for the agents view's counts.
+COUNT_FG: dict[AgentState, str] = {
+    **{state: fg for state, (fg, _) in STATE_STYLE.items() if state is not None},
+    AgentState.working: CATPPUCCIN["sky"],
+    AgentState.waiting: CATPPUCCIN["lavender"],
+    AgentState.idle: CATPPUCCIN["overlay0"],
+}
 
 
-def prompt_for_mode(mode: str) -> str:
+def mode_glyph(mode: str) -> str:
     # "all" is a synthetic mode that doesn't appear in KIND_ICON; the rest
     # share their glyph with the per-entry kind icon for visual consistency.
-    glyph = ">" if mode == "all" else KIND_ICON[MODE_KIND[mode]]
-    return f"{glyph}  "
+    return ">" if mode == "all" else KIND_ICON[MODE_KIND[mode]]
 
 
-def header_text() -> str:
-    items = [
-        ("^a all", CATPPUCCIN["subtext0"]),
-        ("^s sessions", CATPPUCCIN["sky"]),
-        ("^f find", CATPPUCCIN["subtext0"]),
-        ("tab/s-tab move", CATPPUCCIN["overlay0"]),
-        ("enter open", CATPPUCCIN["overlay0"]),
-    ]
-    legend = "  " + " ".join(ansi_style(label, fg=color) for label, color in items)
-    columns = (
-        f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(STATE_WIDTH)}path"
+def prompt_text(
+    mode: str, crew: bool = False, counts: Mapping[AgentState, int] | None = None
+) -> str:
+    """The prompt: crew mark, view glyph, and in the agents view the number of
+    shown agents per state, strongest first."""
+    mark = CREW_MARK if crew else ""
+    shown = sorted((counts or {}).items(), key=lambda item: -item[0])
+    groups = " ".join(
+        ansi_style(f"{STATE_GLYPH[st]}{n}", fg=COUNT_FG[st]) for st, n in shown if n
     )
-    return f"{legend}\n{UNDERLINE}{columns}{RESET}"
+    return f"{mark}{mode_glyph(mode)} {groups}{' ' if groups else ''} "
+
+
+def prompt_state(prompt: str) -> tuple[str, bool]:
+    """The (view, crew) a prompt built by prompt_text encodes."""
+    crew = prompt.startswith(CREW_MARK)
+    glyph = prompt.removeprefix(CREW_MARK)[:1]
+    views = {mode_glyph(mode): mode for mode in MODES}
+    return views.get(glyph, "all"), crew
+
+
+# Agents view columns after the label.
+STREAM_WIDTH = 16
+HOST_WIDTH = 12
+
+
+@dataclass(frozen=True)
+class AgentColumns:
+    stream: bool = False
+    host: bool = False
+
+
+def header_text(
+    mode: str = "all",
+    *,
+    notice: str = "",
+    status: str = "",
+    columns: AgentColumns | None = None,
+) -> str:
+    """Header lines: murmur's session notice when a peer needs one, the key
+    legend, a status line (empty view, murmur missing), the column titles."""
+    items = [
+        ("all", "^a all"),
+        ("sessions", "^s sessions"),
+        ("agents", "^g crew" if mode == "agents" else "^g agents"),
+        ("find", "^f find"),
+    ]
+    labels = [
+        ansi_style(label, fg=CATPPUCCIN["sky" if view == mode else "subtext0"])
+        for view, label in items
+    ]
+    labels += [
+        ansi_style(label, fg=CATPPUCCIN["overlay0"])
+        for label in ("tab/s-tab move", "enter open")
+    ]
+    lines = [notice] if notice else []
+    lines.append("  " + " ".join(labels))
+    if status:
+        lines.append("  " + status)
+    if mode == "agents":
+        columns = columns or AgentColumns()
+        titles = "   " + "agent".ljust(DISPLAY_NAME_WIDTH)
+        if columns.stream:
+            titles += " " + "stream".ljust(STREAM_WIDTH)
+        if columns.host:
+            titles += " " + "host".ljust(HOST_WIDTH)
+        titles += " age"
+    else:
+        titles = (
+            f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(STATE_WIDTH)}path"
+        )
+    lines.append(f"{UNDERLINE}{titles}{RESET}")
+    return "\n".join(lines)
 
 
 def fzf_border(env: Mapping[str, str] = os.environ) -> str:
@@ -849,6 +944,7 @@ PANE_FIELDS = {
     "jump_target": lambda v: _is_str(v) and bool(v),
     "updated_at": _is_time,
     "attached_pane": lambda v: v is None or _is_pane_id(v),
+    "workstream": _is_str_or_none,
 }
 
 
@@ -858,8 +954,30 @@ def valid_pane(pane: object) -> bool:
     return all(k in pane and check(pane[k]) for k, check in PANE_FIELDS.items())
 
 
-def murmur_panes() -> list[dict] | None:
-    """murmur's agent panes, or None when murmur is absent or too old.
+def valid_peer(peer: object) -> bool:
+    """A peer as the session notice reads it; fetched_at is optional."""
+    return (
+        isinstance(peer, dict)
+        and _is_str(peer.get("name"))
+        and _is_bool(peer.get("needs_session"))
+        and _is_time(peer.get("fetched_at"))
+    )
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    panes: list[dict]
+    peers: list[dict]
+
+
+# Why a murmur snapshot could not be read, as the agents view words it.
+NO_MURMUR = "murmur not installed"
+OLD_MURMUR = "murmur too old for the agent view"
+SLOW_MURMUR = "murmur did not answer in time"
+
+
+def murmur_snapshot() -> tuple[Snapshot | None, str]:
+    """murmur's agent panes and peers, or None and the reason there are none.
 
     One cache-only read (``status --json --cached``: it never reaches a peer),
     under a short timeout. Capability is probed by the call itself: it must
@@ -869,7 +987,7 @@ def murmur_panes() -> list[dict] | None:
     """
     exe = murmur_command()
     if exe is None:
-        return None
+        return None, NO_MURMUR
     timeout = float(os.environ.get("TSESH_MURMUR_TIMEOUT", "1"))
     try:
         result = subprocess.run(
@@ -884,11 +1002,16 @@ def murmur_panes() -> list[dict] | None:
             if result.returncode == 0
             else None
         )
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return None
+    except subprocess.TimeoutExpired:
+        return None, SLOW_MURMUR
+    except (OSError, ValueError):
+        return None, OLD_MURMUR
     panes = data.get("panes") if isinstance(data, dict) else None
+    peers = data.get("peers", []) if isinstance(data, dict) else None
     if not isinstance(panes, list) or not all(valid_pane(p) for p in panes):
-        return None
+        return None, OLD_MURMUR
+    if not isinstance(peers, list) or not all(valid_peer(p) for p in peers):
+        return None, OLD_MURMUR
     with contextlib.suppress(OSError):
         subprocess.Popen(
             [exe, "collect", "--quiet", "--floored"],
@@ -897,7 +1020,7 @@ def murmur_panes() -> list[dict] | None:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    return panes
+    return Snapshot(panes, peers), ""
 
 
 def murmur_can_jump(exe: str) -> bool:
@@ -1017,8 +1140,53 @@ def _can_jump() -> bool:
     return exe is not None and murmur_can_jump(exe)
 
 
+def inside_own_server() -> bool:
+    """Whether the invoking client is on the server tsesh's tmux calls reach.
+
+    Only then may tsesh move the client itself; outside tmux, or from a client
+    of another server, an agent is murmur's to reach.
+    """
+    ambient = os.environ.get("TMUX")
+    return bool(ambient) and own_socket() == os.path.realpath(ambient.split(",")[0])
+
+
+def current_location() -> tuple[str, str]:
+    """(pane id, session name) of the invoking client, resolved before fzf
+    starts (see resolve_invoker) and handed to reloads through the environment.
+    """
+    return (
+        os.environ.get("TSESH_CURRENT_PANE", ""),
+        os.environ.get("TSESH_CURRENT_SESSION", ""),
+    )
+
+
+def pane_state(pane: dict) -> AgentState:
+    return AgentState[str(pane["render_state"])]
+
+
+def agent_entry(pane: dict, **fields: object) -> Entry:
+    """An agent row: the payload every view shares, plus FIELDS."""
+    is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
+    pane_id = clean_field(pane.get("pane"))
+    current = is_here and pane_id == current_location()[0]
+    return Entry(
+        kind="agent",
+        name=clean_field(pane.get("label")),
+        session_name=clean_field(pane.get("session_name")),
+        worst_state=pane_state(pane),
+        is_running=True,
+        host=clean_field(pane.get("host")),
+        pane=pane_id,
+        jump_target=clean_field(pane.get("jump_target")),
+        here="1" if is_here else "",
+        socket=(own_socket() or "") if is_here else "",
+        marker="current" if current else "",
+        **fields,
+    )
+
+
 def agent_entries(
-    panes: list[dict], live: Mapping[str, object]
+    panes: list[dict], live: Mapping[str, object], *, crew: bool = False
 ) -> tuple[list[Entry], dict[str, dict[AgentState, int]]]:
     """Attention rows for the all view, and per-session state counts.
 
@@ -1030,8 +1198,7 @@ def agent_entries(
     offer_rows: bool | None = None  # probed lazily, once
     attached_cache: dict[str, str | None] = {}
     for pane in panes:
-        raw_state = str(pane.get("render_state", ""))
-        state = AgentState.idle if raw_state == "idle" else AgentState.parse(raw_state)
+        state = pane_state(pane)
         is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
         session = clean_field(pane.get("session_name"))
         counted = session if is_here else None
@@ -1045,13 +1212,11 @@ def agent_entries(
             if attached not in attached_cache:
                 attached_cache[attached] = attached_session(attached)
             counted = attached_cache[attached]
-        if state is not None and counted and counted in live:
+        if counted and counted in live:
             per = counts.setdefault(counted, {})
             per[state] = per.get(state, 0) + 1
-        if (
-            state is not None
-            and str(pane.get("render_state")) in ATTENTION_ROW_STATES
-            and pane.get("visible")
+        if str(pane.get("render_state")) in ATTENTION_ROW_STATES and (
+            crew or pane.get("visible")
         ):
             if offer_rows is None:
                 offer_rows = _can_jump()
@@ -1061,26 +1226,109 @@ def agent_entries(
             parts = [clean_field(pane.get("host")), where]
             parts.append(age_text(pane.get("updated_at")))
             rows.append(
-                Entry(
-                    kind="agent",
-                    name=clean_field(pane.get("label")),
-                    session_name=session,
-                    worst_state=state,
-                    is_running=True,
-                    host=clean_field(pane.get("host")),
-                    pane=clean_field(pane.get("pane")),
-                    jump_target=clean_field(pane.get("jump_target")),
-                    here="1" if is_here else "",
-                    socket=(own_socket() or "") if is_here else "",
-                    detail=" · ".join(p for p in parts if p),
-                )
+                agent_entry(pane, detail=" \u00b7 ".join(p for p in parts if p))
             )
     return rows, counts
+
+
+def agent_stream(pane: dict) -> str:
+    """Which piece of work: mu's workstream, else the tmux session; blank when
+    it would repeat the label."""
+    stream = clean_field(pane.get("workstream") or pane.get("session_name"))
+    return "" if stream == clean_field(pane.get("label")) else stream
+
+
+def agent_view_entries(
+    panes: list[dict], *, crew: bool
+) -> tuple[list[Entry], AgentColumns, dict[AgentState, int]]:
+    """Rows of the agents view: every agent murmur marks visible (all of them
+    with CREW), in murmur's order, with the columns they need and the count of
+    shown agents per state."""
+    shown = [p for p in panes if crew or p.get("visible")]
+    columns = AgentColumns(
+        stream=any(agent_stream(p) for p in shown),
+        host=any(not p.get("local") for p in shown),
+    )
+    counts: dict[AgentState, int] = {}
+    rows: list[Entry] = []
+    for pane in shown:
+        state = pane_state(pane)
+        counts[state] = counts.get(state, 0) + 1
+        label = truncate(clean_field(pane.get("label")), DISPLAY_NAME_WIDTH)
+        cells = [f"{STATE_GLYPH[state]} {label.ljust(DISPLAY_NAME_WIDTH)}"]
+        if columns.stream:
+            cells.append(truncate(agent_stream(pane), STREAM_WIDTH).ljust(STREAM_WIDTH))
+        if columns.host:
+            host = clean_field(pane.get("host"))
+            where = "here" if pane.get("local") else f"\u2192 {host}"
+            cells.append(truncate(where, HOST_WIDTH).ljust(HOST_WIDTH))
+        cells.append(age_text(pane.get("updated_at")))
+        rows.append(agent_entry(pane, text=" ".join(cells).rstrip()))
+    return rows, columns, counts
+
+
+def session_notice(peers: list[dict]) -> str:
+    """murmur's notice for peers that need an interactive session, or ""."""
+    gated = sorted(
+        (p for p in peers if p["needs_session"]),
+        key=lambda p: p.get("fetched_at") or 0,
+    )
+    if not gated:
+        return ""
+    names = ", ".join(clean_field(p["name"]) for p in gated[:3])
+    fetched = gated[0].get("fetched_at")
+    seen = "never" if fetched is None else age_text(fetched)
+    text = (
+        f"{STATE_GLYPH[AgentState.blocked]} {names}: re-auth needed (last seen {seen})"
+    )
+    return ansi_style(text, fg=CATPPUCCIN["peach"], bold=True)
+
+
+@dataclass(frozen=True)
+class View:
+    entries: list[Entry]
+    header: str
+    prompt: str
+
+
+def agents_view(crew: bool) -> View:
+    snapshot, problem = murmur_snapshot()
+    if snapshot is not None and not _can_jump():
+        snapshot, problem = None, OLD_MURMUR
+    if snapshot is None:
+        status = ansi_style(problem, fg=CATPPUCCIN["peach"])
+        return View(
+            [], header_text("agents", status=status), prompt_text("agents", crew)
+        )
+    rows, columns, counts = agent_view_entries(snapshot.panes, crew=crew)
+    status = ""
+    if not rows:
+        hidden = sum(1 for p in snapshot.panes if not p.get("visible"))
+        status = f"No human agents (+{hidden} crew: ctrl-g)" if hidden else "No agents"
+        status = ansi_style(status, fg=CATPPUCCIN["subtext0"])
+    header = header_text(
+        "agents",
+        notice=session_notice(snapshot.peers),
+        status=status,
+        columns=columns,
+    )
+    return View(rows, header, prompt_text("agents", crew, counts))
 
 
 def build_entries(
     mode: str, live: Mapping[str, AgentState | None] | None = None
 ) -> list[Entry]:
+    return build_view(mode, live).entries
+
+
+def build_view(
+    mode: str,
+    live: Mapping[str, AgentState | None] | None = None,
+    *,
+    crew: bool = False,
+) -> View:
+    if mode == "agents":
+        return agents_view(crew)
     config = load_config()
     configured_sessions = config.sessions
     configured_paths = {expand(session.path) for session in configured_sessions}
@@ -1088,11 +1336,16 @@ def build_entries(
     if live is None:
         live = backend().live_sessions()
     live_names = set(live)
+    attached = getattr(live, "attached", frozenset())
+    current_session = current_location()[1]
     states = dict(live)
     entries: list[Entry] = []
     session_counts: dict[str, dict[AgentState, int]] = {}
-    if mode in {"all", "sessions"} and (panes := murmur_panes()) is not None:
-        agent_rows, session_counts = agent_entries(panes, live)
+    notice = ""
+    snapshot = murmur_snapshot()[0] if mode in {"all", "sessions"} else None
+    if snapshot is not None:
+        notice = session_notice(snapshot.peers)
+        agent_rows, session_counts = agent_entries(snapshot.panes, live, crew=crew)
         for name, per in session_counts.items():
             active = [st for st in per if st is not AgentState.idle]
             if not active:
@@ -1107,6 +1360,11 @@ def build_entries(
         per = session_counts.get(name, {})
         return tuple(sorted(per.items(), key=lambda item: -item[0]))
 
+    def marker_for(name: str) -> str:
+        if name in live_names and name == current_session:
+            return "current"
+        return "attached" if name in attached else ""
+
     if mode in {"all", "sessions"}:
         entries.extend(
             Entry(
@@ -1119,6 +1377,7 @@ def build_entries(
                 worst_state=states.get(session.name),
                 is_running=session.name in live_names,
                 agent_counts=counts_for(session.name),
+                marker=marker_for(session.name),
             )
             for session in configured_sessions
         )
@@ -1136,6 +1395,7 @@ def build_entries(
                     worst_state=states.get(session_name),
                     is_running=True,
                     agent_counts=counts_for(session_name),
+                    marker=marker_for(session_name),
                 )
             )
 
@@ -1161,7 +1421,7 @@ def build_entries(
             )
         )
 
-    return entries
+    return View(entries, header_text(mode, notice=notice), prompt_text(mode, crew))
 
 
 def tmux_session_preview(name: str) -> int:
@@ -1300,17 +1560,66 @@ def preview(
     return 0
 
 
-def reload_cmd(mode: str) -> str:
-    return f"{sh_quote(sys.argv[0])} list --mode {mode}"
+def reload_cmd(mode: str, crew: bool = False) -> str:
+    crew_flag = " --crew" if crew else ""
+    return f"{sh_quote(sys.argv[0])} list --mode {mode}{crew_flag}"
 
 
-def print_entries(mode: str) -> int:
-    for entry in build_entries(mode):
+# Set for fzf's children: where `list` leaves the header and prompt of the view
+# it printed, for the `load` binding to pick up.
+PICKER_DIR_ENV = "TSESH_PICKER_DIR"
+
+
+def write_view_files(directory: str, view: View) -> None:
+    for name, text in (("header", view.header), ("prompt", view.prompt)):
+        tmp = Path(directory, f".{name}.{os.getpid()}")
+        tmp.write_text(text)
+        tmp.replace(Path(directory, name))
+
+
+def print_entries(mode: str, crew: bool = False) -> int:
+    view = build_view(mode, crew=crew)
+    if directory := os.environ.get(PICKER_DIR_ENV):
+        with contextlib.suppress(OSError):
+            write_view_files(directory, view)
+    for entry in view.entries:
         print(entry.to_fzf_row())
     return 0
 
 
-def _fzf_command(mode: str, query: str = "") -> list[str]:
+def fzf_action(target: str) -> int:
+    """fzf `transform` for a view key: switch to TARGET, keeping the crew
+    toggle; the agents key pressed in the agents view flips it instead.
+
+    The state comes from $FZF_PROMPT (see prompt_text), never from a value
+    fixed when the bindings were built.
+    """
+    mode, crew = prompt_state(os.environ.get("FZF_PROMPT", ""))
+    if target == "agents" and mode == "agents":
+        crew = not crew
+    print(
+        f"change-prompt({prompt_text(target, crew)})+reload({reload_cmd(target, crew)})"
+    )
+    return 0
+
+
+VIEW_KEYS = {
+    "ctrl-a": "all",
+    "ctrl-s": "sessions",
+    "ctrl-g": "agents",
+    "ctrl-f": "find",
+}
+
+
+def _fzf_command(
+    mode: str,
+    query: str = "",
+    *,
+    header: str | None = None,
+    prompt: str | None = None,
+    state_dir: str = "",
+) -> list[str]:
+    self_cmd = sh_quote(sys.argv[0])
     cmd = [
         "fzf",
         "--layout=reverse",
@@ -1338,21 +1647,29 @@ def _fzf_command(mode: str, query: str = "") -> list[str]:
         "--border-label",
         FZF_BORDER_LABEL,
         "--prompt",
-        prompt_for_mode(mode),
+        prompt_text(mode) if prompt is None else prompt,
         "--header",
-        header_text(),
+        header_text(mode) if header is None else header,
         "--bind",
         "tab:down,btab:up",
-        "--bind",
-        f"ctrl-a:change-prompt({prompt_for_mode('all')})+reload({reload_cmd('all')})",
-        "--bind",
-        f"ctrl-s:change-prompt({prompt_for_mode('sessions')})+reload({reload_cmd('sessions')})",
-        "--bind",
-        f"ctrl-f:change-prompt({prompt_for_mode('find')})+reload({reload_cmd('find')})",
+    ]
+    # transform: the binding decides per keypress from $FZF_PROMPT, so the
+    # crew toggle holds across view switches (a fixed reload cannot know it).
+    for key, view in VIEW_KEYS.items():
+        cmd += ["--bind", f"{key}:transform:{self_cmd} fzf-action {view}"]
+    if state_dir:
+        # Each reload's `list` leaves its view's header and prompt here.
+        d = Path(state_dir)
+        cmd += [
+            "--bind",
+            f"load:transform-header(cat {sh_quote(str(d / 'header'))})"
+            f"+transform-prompt(cat {sh_quote(str(d / 'prompt'))})",
+        ]
+    cmd += [
         "--preview-window",
         "right:55%,border-left",
         "--preview",
-        f"{sh_quote(sys.argv[0])} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}} --socket {{11}}",
+        f"{self_cmd} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}} --socket {{11}}",
     ]
     if load_config().fzf_exact:
         # Substring (literal) matching only. Prefix a token with `'` to opt
@@ -1366,19 +1683,35 @@ def _fzf_command(mode: str, query: str = "") -> list[str]:
 def run_fzf(
     mode: str, query: str, *, capture: bool
 ) -> subprocess.CompletedProcess[str]:
-    live = backend().snapshot()
-    if live is None:
-        backend().ensure_server()
-        live = backend().live_sessions()
-    mode = effective_initial_mode(mode, live)
-    entries = "\n".join(entry.to_fzf_row() for entry in build_entries(mode, live))
-    return subprocess.run(
-        _fzf_command(mode, query=query),
-        input=entries,
-        text=True,
-        capture_output=capture,
-        check=False,
-    )
+    if mode == "agents":
+        # Works outside tmux and from other terminals: no server is started
+        # and no session listed.
+        live: Mapping[str, AgentState | None] = {}
+    else:
+        live = backend().snapshot()
+        if live is None:
+            backend().ensure_server()
+            live = backend().live_sessions()
+        mode = effective_initial_mode(mode, live)
+    view = build_view(mode, live)
+    entries = "\n".join(entry.to_fzf_row() for entry in view.entries)
+    with tempfile.TemporaryDirectory(prefix="tsesh-") as state_dir:
+        write_view_files(state_dir, view)
+        cmd = _fzf_command(
+            mode,
+            query=query,
+            header=view.header,
+            prompt=view.prompt,
+            state_dir=state_dir,
+        )
+        return subprocess.run(
+            cmd,
+            input=entries,
+            text=True,
+            capture_output=capture,
+            check=False,
+            env={**os.environ, PICKER_DIR_ENV: state_dir},
+        )
 
 
 def fzf(mode: str = "all", query: str = "") -> int:
@@ -1392,7 +1725,10 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
     still renders interactively while we keep the selection in-process.
     """
     global INVOKING_CLIENT
-    INVOKING_CLIENT = resolve_client(client)
+    INVOKING_CLIENT, pane, session = resolve_invoker(client)
+    # Read by every build of the picker's rows, reloads included.
+    os.environ["TSESH_CURRENT_PANE"] = pane
+    os.environ["TSESH_CURRENT_SESSION"] = session
     proc = run_fzf(mode, query, capture=True)
     if proc.returncode != 0:
         return proc.returncode
@@ -1425,10 +1761,15 @@ def connect_agent(payload: EntryPayload) -> int:
     """Take the user to an agent's pane.
 
     A pane on this tmux server is selected here (pane ids are unique only per
-    server) and the client moved to it. Anything else, such as a remote host or
-    a private tmux server, is murmur's to reach: ``murmur jump``.
+    server) and the client moved to it, when the client is on that server too.
+    Anything else, such as a remote host, a private tmux server, or a picker
+    run outside tmux, is murmur's to reach: ``murmur jump``.
     """
-    if proven_here(payload.here, payload.socket) and payload.pane:
+    if (
+        proven_here(payload.here, payload.socket)
+        and inside_own_server()
+        and payload.pane
+    ):
         # Pinned: the calls below name the proven socket itself, so an alias
         # retargeted after this check cannot redirect them.
         with pinned_server(payload.socket):
@@ -1453,13 +1794,19 @@ def update_last(name: str) -> None:
     LAST_FILE.write_text(name + "\n")
 
 
+class LiveSessions(dict[str, AgentState | None]):
+    """Live session -> state, plus the sessions some client has attached."""
+
+    attached: frozenset[str] = frozenset()
+
+
 class TmuxBackend:
     """tmux sessions. A class so tests can stub one method at a time."""
 
     def live_sessions(self) -> dict[str, AgentState | None]:
         return self.snapshot() or {}
 
-    def snapshot(self) -> dict[str, AgentState | None] | None:
+    def snapshot(self) -> LiveSessions | None:
         """Live session -> strongest murmur state in one list-sessions call.
 
         None when no server runs, so a caller can start one and ask again.
@@ -1467,16 +1814,21 @@ class TmuxBackend:
         result = tmux_cmd(
             "list-sessions",
             "-F",
-            "#{session_name}\t#{@murmur_session_state}",
+            "#{session_attached}\t#{@murmur_session_state}\t#{session_name}",
             check=False,
         )
         if result.returncode != 0:
             return None
-        live: dict[str, AgentState | None] = {}
+        live = LiveSessions()
+        attached: set[str] = set()
         for line in result.stdout.splitlines():
-            name, _, raw = line.partition("\t")
+            clients, _, rest = line.partition("\t")
+            raw, _, name = rest.partition("\t")
             if name.strip():
                 live[name] = AgentState.parse(raw)
+                if clients not in {"", "0"}:
+                    attached.add(name)
+        live.attached = frozenset(attached)
         return live
 
     def exists(self, name: str) -> bool:
@@ -1499,7 +1851,10 @@ class TmuxBackend:
         """
         target = target or exact_session_target(name)
         if os.environ.get("TMUX"):
-            tmux_cmd("switch-client", "-t", target, capture=False)
+            # The client that opened the picker, not whichever tmux calls
+            # current (a popup has no pane of its own).
+            client = ["-c", INVOKING_CLIENT] if INVOKING_CLIENT else []
+            tmux_cmd("switch-client", *client, "-t", target, capture=False)
         else:
             tmux_cmd("attach-session", "-t", target, capture=False)
         update_last(name)
@@ -1728,7 +2083,7 @@ def last() -> int:
     return 0
 
 
-MODES = ["all", "sessions", "find"]
+MODES = ["all", "sessions", "find", "agents"]
 
 
 # The tmux client the picker was opened from; failures are shown on it, not on
@@ -1736,16 +2091,38 @@ MODES = ["all", "sessions", "find"]
 INVOKING_CLIENT: str | None = None
 
 
-def resolve_client(given: str = "") -> str | None:
-    """The invoking client: the one the key binding named, else (in tmux) the
-    one tmux reports now. Resolved once, before any picker interaction."""
-    if given and re.fullmatch(r"[A-Za-z0-9_./:@-]+", given):
-        return given
-    if not os.environ.get("TMUX"):
-        return None
-    result = tmux_bytes("display-message", "-p", "#{client_name}")
-    name = os.fsdecode(result.stdout).strip() if result.returncode == 0 else ""
-    return name or None
+def resolve_invoker(given: str = "") -> tuple[str | None, str, str]:
+    """(client, pane id, session name) of whoever opened the picker, with one
+    ``display-message`` before fzf starts. The client is the one the key
+    binding named, else (in tmux) the one tmux reports now. The pane and
+    session are read only from a client of tsesh's own server; in a popup
+    $TMUX_PANE is unset, so they come from the client itself."""
+    client = given if given and re.fullmatch(r"[A-Za-z0-9_./:@-]+", given) else None
+    inside = inside_own_server()
+    if client and not inside:
+        return client, "", ""
+    if not client and not os.environ.get("TMUX"):
+        return None, "", ""
+    where = "#{pane_id}\t#{session_name}" if inside else ""
+    if client:
+        result = tmux_bytes("display-message", "-p", "-t", client, where)
+        fields = [client]
+    else:
+        # In a pane (not a popup) $TMUX_PANE is where the picker runs.
+        own_pane = os.environ.get("TMUX_PANE", "")
+        target = ["-t", own_pane] if inside and _is_pane_id(own_pane) else []
+        result = tmux_bytes(
+            "display-message", "-p", *target, f"#{{client_name}}\t{where}"
+        )
+        fields = []
+    text = (
+        os.fsdecode(result.stdout).removesuffix("\n") if result.returncode == 0 else ""
+    )
+    fields += text.split("\t", 2 - len(fields))
+    name, pane, session = [*fields, "", "", ""][:3]
+    if not _is_pane_id(pane):
+        pane, session = "", ""
+    return name or None, pane, session
 
 
 def report_failure(message: str) -> None:
@@ -1776,6 +2153,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             choices=MODES,
             default="all",
         )
+        p_list.add_argument(
+            "--crew", action="store_true", help="include orchestrated agents"
+        )
+
+        # fzf's transform binding for the view keys; not for people.
+        p_action = sub.add_parser("fzf-action")
+        p_action.add_argument("view", choices=MODES)
 
         p_pick = sub.add_parser("picker")
         p_pick.add_argument(
@@ -1819,7 +2203,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         args = parser.parse_args(list(argv) if argv is not None else None)
 
         if args.cmd == "list":
-            return print_entries(args.mode)
+            return print_entries(args.mode, args.crew)
+        if args.cmd == "fzf-action":
+            return fzf_action(args.view)
         if args.cmd == "picker":
             return fzf(args.mode, query=args.query)
         if args.cmd == "pick-and-connect":
