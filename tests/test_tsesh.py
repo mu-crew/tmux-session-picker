@@ -1326,6 +1326,60 @@ class MurmurRows(FakeMurmur):
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class RemoteAttachments(FakeMurmur):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.sock = self.tmp / "s"
+        self.tmux = ["tmux", "-f", "/dev/null", "-S", str(self.sock)]
+        subprocess.run([*self.tmux, "new-session", "-d", "-s", "lalala"], check=True)
+        self.addCleanup(
+            subprocess.run, [*self.tmux, "kill-server"], capture_output=True
+        )
+        self.pane = subprocess.run(
+            [*self.tmux, "list-panes", "-t", "lalala", "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()[0]
+        cfg = config()
+        for owner, attr, value in (
+            (tsesh, "load_config", lambda: cfg),
+            (tsesh, "zoxide_paths", list),
+        ):
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
+
+    def entries(self, panes):
+        self.install(panes)
+        os.environ["TSESH_TMUX_SOCKET_PATH"] = str(self.sock)
+        return tsesh.build_entries("all")
+
+    def remote(self, **over):
+        return agent_pane(
+            local=False,
+            host="lalala",
+            session_name="remote-session",
+            render_state="done",
+            **over,
+        )
+
+    def test_attached_remote_agent_counts_toward_the_local_session(self):
+        entries = self.entries([self.remote(attached_pane=self.pane)])
+        lalala = next(e for e in entries if e.name == "lalala")
+        self.assertEqual(lalala.agent_counts, ((State.done, 1),))
+        row = next(e for e in entries if e.kind == "agent")
+        self.assertEqual(row.here, "")  # never a local capture/select target
+
+    def test_unattached_or_unproven_remote_agents_do_not_count(self):
+        for attached in (None, "%9999"):
+            with self.subTest(attached=attached):
+                entries = self.entries([self.remote(attached_pane=attached)])
+                lalala = next(e for e in entries if e.name == "lalala")
+                self.assertEqual(lalala.agent_counts, ())
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
 class AmbientServer(FakeMurmur):
     """tsesh with no socket override talks to the server $TMUX names."""
 

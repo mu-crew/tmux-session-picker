@@ -946,6 +946,19 @@ def age_text(updated_ms: object, now_ms: float | None = None) -> str:
 ATTENTION_ROW_STATES = {"crashed", "error", "blocked", "done"}
 
 
+def attached_session(pane_id: str) -> str | None:
+    """The session of a local pane on tsesh's own server, or None.
+
+    murmur reports a remote agent's ``attached_pane``: a pane here that holds
+    the ssh session to it. murmur read it with the same ambient tmux tsesh
+    uses, so it counts only if this server really has that pane.
+    """
+    result = tmux_bytes("display-message", "-p", "-t", pane_id, "#{session_name}")
+    if result.returncode != 0:
+        return None
+    return os.fsdecode(result.stdout).removesuffix("\n") or None
+
+
 def _can_jump() -> bool:
     exe = murmur_command()
     return exe is not None and murmur_can_jump(exe)
@@ -962,12 +975,20 @@ def agent_entries(
     counts: dict[str, dict[AgentState, int]] = {}
     rows: list[Entry] = []
     offer_rows: bool | None = None  # probed lazily, once
+    attached_cache: dict[str, str | None] = {}
     for pane in panes:
         state = AgentState.parse(str(pane.get("render_state", "")))
         is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
         session = clean_field(pane.get("session_name"))
-        if state is not None and is_here and session in live:
-            per = counts.setdefault(session, {})
+        counted = session if is_here else None
+        if not pane.get("local") and pane.get("attached_pane"):
+            # A remote agent counts under the local session holding its ssh pane.
+            attached = str(pane["attached_pane"])
+            if attached not in attached_cache:
+                attached_cache[attached] = attached_session(attached)
+            counted = attached_cache[attached]
+        if state is not None and counted and counted in live:
+            per = counts.setdefault(counted, {})
             per[state] = per.get(state, 0) + 1
         if (
             state is not None
