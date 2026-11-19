@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -1181,6 +1182,12 @@ def last() -> int:
     return 0
 
 
+def pause_for_error() -> None:
+    """display-popup -E closes on exit; leave the message readable."""
+    if sys.stderr.isatty():
+        time.sleep(2)
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     try:
         parser = argparse.ArgumentParser()
@@ -1246,6 +1253,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 1
     except ConfigError as exc:
         print(exc, file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip()
+        print(detail or f"tmux failed: {exc}", file=sys.stderr)
+        pause_for_error()
         return 1
 
 

@@ -291,6 +291,22 @@ class Tildify(unittest.TestCase):
         self.assertEqual(tsesh.tildify("/srv" + home + "/x"), "/srv" + home + "/x")
 
 
+class TmuxErrorsAreReported(unittest.TestCase):
+    def test_failed_tmux_is_a_message_not_a_traceback(self):
+        def boom(*a, **kw):
+            raise subprocess.CalledProcessError(1, ["tmux"], stderr="no such thing\n")
+
+        old, old_pause = tsesh.connect, tsesh.pause_for_error
+        tsesh.connect = boom
+        tsesh.pause_for_error = lambda: None
+        self.addCleanup(setattr, tsesh, "connect", old)
+        self.addCleanup(setattr, tsesh, "pause_for_error", old_pause)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code = tsesh.main(["connect", "x"])
+        self.assertEqual(code, 1)
+        self.assertIn("no such thing", err.getvalue())
+
+
 class BuildEntries(unittest.TestCase):
     """The merge the picker is: which sessions appear, in what order."""
 
