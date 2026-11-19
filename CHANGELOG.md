@@ -19,8 +19,10 @@ versions follow [SemVer](https://semver.org/).
 - `tsesh last` shows "tsesh: no previous session" in tmux when there is none.
 
 - `ctrl-x` in the picker kills the highlighted session and redraws the view.
-  It ignores agent, zoxide and find rows and refuses the session the client is
-  in, with a tmux message. Also available as `tsesh kill --session NAME`.
+  It ignores agent, zoxide, find and not-running pinned rows and refuses the
+  session the client is in, with a tmux message. It targets the session by its
+  tmux id, so names like `$0`, `-x`, `a.b` or ones with outer spaces kill that
+  session and no other. Also available as `tsesh kill --session-id='$N'`.
 - `tsesh --version`.
 - murmur's `error` and `waiting` agent states, with murmur's glyphs. `error`
   counts as needing attention.

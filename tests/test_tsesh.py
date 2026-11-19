@@ -17,6 +17,8 @@ import time
 import unittest
 import unittest.mock
 from pathlib import Path
+from shlex import quote as shlex_quote
+from urllib.request import Request
 
 ROOT = Path(__file__).resolve().parents[1]
 TSESH = ROOT / "bin" / "tsesh"
@@ -506,14 +508,26 @@ class LiveTmux(unittest.TestCase):
     def sessions(self):
         return sorted(tsesh.TmuxBackend().live_sessions())
 
+    def session_id(self, name):
+        rows = [
+            tsesh.Entry.from_fzf_row(e.to_fzf_row())
+            for e in tsesh.build_entries("sessions")
+        ]
+        return next(r["session_id"] for r in rows if r["session_name"] == name)
+
     def test_kill_removes_a_live_session_row(self):
-        self.assertEqual(tsesh.main(["kill", "--session", "quiet"]), 0)
+        with unittest.mock.patch.object(tsesh, "load_config", config):
+            sid = self.session_id("quiet")
+        self.assertEqual(tsesh.main(["kill", f"--session-id={sid}"]), 0)
         self.assertEqual(self.sessions(), ["busy", "odd"])
 
-    def test_kill_ignores_non_session_rows_and_missing_sessions(self):
-        for kind in ("agent", "zoxide", "find"):
-            tsesh.main(["kill", "--kind", kind, "--session", "quiet"])
-        tsesh.main(["kill", "--kind", "default", "--session", "pinned-not-running"])
+    def test_kill_ignores_rows_without_a_live_session_id(self):
+        self.tmux("new-session", "-d", "-s", "gone")
+        with unittest.mock.patch.object(tsesh, "load_config", config):
+            gone = self.session_id("gone")
+        self.tmux("kill-session", "-t", gone)
+        for sid in ("", gone, "quiet", "=quiet", "$x"):
+            tsesh.main(["kill", f"--session-id={sid}"])
         self.assertEqual(self.sessions(), ["busy", "odd", "quiet"])
 
     def test_kill_refuses_the_clients_current_session_with_a_message(self):
@@ -549,9 +563,11 @@ class LiveTmux(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertTrue(client)
-        tsesh.main(["kill", "--session", "busy", "--client", client])
+        with unittest.mock.patch.object(tsesh, "load_config", config):
+            busy, quiet = self.session_id("busy"), self.session_id("quiet")
+        tsesh.main(["kill", f"--session-id={busy}", "--client", client])
         self.assertIn("busy", self.sessions())
-        tsesh.main(["kill", "--session", "quiet", "--client", client])
+        tsesh.main(["kill", f"--session-id={quiet}", "--client", client])
         self.assertNotIn("quiet", self.sessions())
         shown = subprocess.run(
             ["tmux", "-L", self.socket, "show-messages", "-t", client],
@@ -620,6 +636,162 @@ class CreateWithDefaultBaseIndex(unittest.TestCase):
         tsesh.TmuxBackend().create("work", "/tmp", "echo hi", "vertical")
         panes = self.tmux("list-panes", "-t", "=work", "-F", "#{pane_index}")
         self.assertEqual(len(panes.stdout.split()), 2)
+
+
+@unittest.skipUnless(shutil.which("tmux") and shutil.which("fzf"), "needs tmux+fzf")
+class KillInPopup(unittest.TestCase):
+    """ctrl-x in the real picker popup, typed on an attached client."""
+
+    def setUp(self):
+        import json
+        import pty
+        import socket
+        import termios
+        import threading
+        import urllib.request
+
+        self.json, self.urlopen = json, urllib.request.urlopen
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        config = tmp / "config.toml"
+        config.write_text(f'[[sessions]]\nname = "$2"\npath = "{tmp}"\n')
+        self.env = dict(
+            os.environ,
+            TSESH_TMUX_SOCKET_PATH=str(tmp / "s"),
+            TSESH_CONFIG=str(config),
+            XDG_STATE_HOME=str(tmp / "state"),
+            TERM="xterm-256color",
+        )
+        self.env.pop("TMUX", None)
+        self.tmux = ["tmux", "-f", "/dev/null", "-S", str(tmp / "s")]
+        self.addCleanup(self.run_tmux, "kill-server")
+        # origin is $0; a session literally named "$0" must not alias it.
+        for name in ("origin", "$0", " spaced ", "spaced", "-flag", "dot.name"):
+            self.run_tmux("new-session", "-d", "-s", name, "-c", str(tmp))
+        pid, self.fd = pty.fork()
+        if pid == 0:
+            os.execvpe(self.tmux[0], [*self.tmux, "attach", "-t", "=origin"], self.env)
+        termios.tcsetwinsize(self.fd, (50, 200))
+        threading.Thread(target=self.drain, daemon=True).start()
+
+        def reap():
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+            with contextlib.suppress(OSError):
+                os.waitpid(pid, 0)
+            with contextlib.suppress(OSError):
+                os.close(self.fd)
+
+        self.addCleanup(reap)
+        self.client = self.wait(
+            lambda: self.run_tmux("list-clients", "-F", "#{client_name}").strip()
+        )
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            self.port = s.getsockname()[1]
+        # tsesh drops FZF_DEFAULT_OPTS, so a shim adds the --listen we drive.
+        shim = tmp / "bin" / "fzf"
+        shim.parent.mkdir()
+        shim.write_text(
+            f'#!/bin/sh\nexec {shlex_quote(shutil.which("fzf") or "fzf")} "$@"'
+            f" --listen=127.0.0.1:{self.port}\n"
+        )
+        shim.chmod(0o755)
+        # display-popup returns only when the popup closes.
+        popup = subprocess.Popen(
+            [
+                *self.tmux,
+                "display-popup",
+                "-c",
+                self.client,
+                "-E",
+                "-w",
+                "90%",
+                "-h",
+                "85%",
+                "-e",
+                f"PATH={shim.parent}{os.pathsep}{os.environ['PATH']}",
+                f"{shlex_quote(str(TSESH))} pick-and-connect --mode sessions"
+                f" --client {shlex_quote(self.client)}",
+            ],
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(popup.wait, 10)
+        self.addCleanup(popup.kill)
+
+    def drain(self):
+        with contextlib.suppress(OSError):
+            while os.read(self.fd, 65536):
+                pass
+
+    def run_tmux(self, *args):
+        return subprocess.run(
+            [*self.tmux, *args],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+
+    def wait(self, probe, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with contextlib.suppress(OSError, ValueError):
+                if value := probe():
+                    return value
+            time.sleep(0.05)
+        self.fail("timed out")
+
+    def fzf_state(self):
+        with self.urlopen(f"http://127.0.0.1:{self.port}/?limit=100", timeout=2) as r:
+            return self.json.load(r)
+
+    def sessions(self):
+        return set(self.run_tmux("list-sessions", "-F", "#{session_name}").splitlines())
+
+    def ctrl_x_on(self, kind, name):
+        def highlight():
+            state = self.fzf_state()
+            if state.get("reading"):
+                return None
+            rows = [m["text"].split("\t") for m in state["matches"]]
+            hit = [i for i, r in enumerate(rows) if r[1:3] == [kind, name]]
+            if not hit:
+                return None
+            pos = hit[0] + 1
+            req = Request(f"http://127.0.0.1:{self.port}", data=f"pos({pos})".encode())
+            self.urlopen(req, timeout=2).close()
+            current = self.fzf_state().get("current") or {}
+            return current.get("text", "").split("\t")[1:3] == [kind, name]
+
+        self.wait(highlight)
+        os.write(self.fd, b"\x18")
+
+    def test_ctrl_x_kills_exactly_the_highlighted_session(self):
+        before = self.sessions()
+        dot = "dot.name" if "dot.name" in before else None
+        # A pinned row that is not running has no id: nothing dies.
+        self.ctrl_x_on("default", "$2")
+        time.sleep(1)
+        self.assertEqual(self.sessions(), before)
+        targets = ["$0", " spaced ", "-flag", *([dot] if dot else [])]
+        for name in targets:
+            self.ctrl_x_on("tmux", name)
+            self.wait(lambda n=name: n not in self.sessions())
+        self.assertEqual(self.sessions(), before - set(targets))
+        # The invoking client's own session is refused, with a message.
+        self.ctrl_x_on("tmux", "origin")
+        shown = self.wait(
+            lambda: (
+                "not killing"
+                in (m := self.run_tmux("show-messages", "-t", self.client))
+                and m
+            )
+        )
+        self.assertIn("(origin)", shown)
+        self.assertIn("origin", self.sessions())
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")

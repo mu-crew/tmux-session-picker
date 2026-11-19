@@ -280,6 +280,7 @@ FZF_ROW_FIELDS: tuple[str, ...] = (
     "jump_target",  # agent rows: murmur's opaque token for `murmur jump`
     "here",  # agent rows: "1" when the pane is on the tmux server tsesh talks to
     "socket",  # agent rows: the socket that proof was made against
+    "session_id",  # live session rows: tmux's $N id, the only exact kill target
 )
 
 
@@ -334,6 +335,7 @@ class Entry:
     detail: str = ""  # shown where a path would be (agent rows)
     marker: str = ""  # "current", "attached" or "": see marker_cell
     text: str = ""  # pre-rendered columns (agents view); replaces the layout
+    session_id: str = ""
 
     @property
     def icon(self) -> str:
@@ -391,6 +393,7 @@ class Entry:
             "jump_target": self.jump_target,
             "here": self.here,
             "socket": self.socket,
+            "session_id": self.session_id,
         }
         return "\t".join(values[name] for name in FZF_ROW_FIELDS)
 
@@ -1422,6 +1425,7 @@ def build_view(
     live_names = set(live)
     attached = getattr(live, "attached", frozenset())
     current_session = current_location()[1]
+    ids = getattr(live, "ids", {})
     states = dict(live)
     entries: list[Entry] = []
     session_counts: dict[str, dict[AgentState, int]] = {}
@@ -1463,6 +1467,7 @@ def build_view(
                 is_running=session.name in live_names,
                 agent_counts=counts_for(session.name),
                 marker=marker_for(session.name),
+                session_id=ids.get(session.name, ""),
             )
             for session in configured_sessions
         )
@@ -1481,6 +1486,7 @@ def build_view(
                     is_running=True,
                     agent_counts=counts_for(session_name),
                     marker=marker_for(session_name),
+                    session_id=ids.get(session_name, ""),
                 )
             )
 
@@ -1653,12 +1659,15 @@ def reload_cmd(mode: str, crew: bool = False) -> str:
 def kill_bind() -> str:
     """ctrl-x: kill the highlighted session row, then redraw the current view.
 
-    fzf exports the live prompt as FZF_PROMPT, which names the view.
+    Only live session rows carry an id; the `=` form keeps an empty one from
+    eating the next flag. fzf exports the live prompt as FZF_PROMPT, which
+    names the view.
     """
     me = sh_quote(sys.argv[0])
     client = f" --client {sh_quote(INVOKING_CLIENT)}" if INVOKING_CLIENT else ""
+    field = FZF_ROW_FIELDS.index("session_id") + 1
     return (
-        f"ctrl-x:execute-silent({me} kill --kind {{2}} --session {{3}}{client})"
+        f"ctrl-x:execute-silent({me} kill --session-id={{{field}}}{client})"
         f'+reload({me} list --prompt "$FZF_PROMPT")'
     )
 
@@ -1919,9 +1928,14 @@ def update_last(name: str) -> None:
 
 
 class LiveSessions(dict[str, AgentState | None]):
-    """Live session -> state, plus the sessions some client has attached."""
+    """Live session -> state, plus the sessions some client has attached
+    and each session's id."""
 
     attached: frozenset[str] = frozenset()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: dict[str, str] = {}  # name -> tmux session id ($N)
 
 
 class TmuxBackend:
@@ -1938,7 +1952,7 @@ class TmuxBackend:
         result = tmux_cmd(
             "list-sessions",
             "-F",
-            "#{session_attached}\t#{@murmur_session_state}\t#{session_name}",
+            "#{session_attached}\t#{session_id}\t#{@murmur_session_state}\t#{session_name}",
             check=False,
         )
         if result.returncode != 0:
@@ -1946,10 +1960,10 @@ class TmuxBackend:
         live = LiveSessions()
         attached: set[str] = set()
         for line in result.stdout.splitlines():
-            clients, _, rest = line.partition("\t")
-            raw, _, name = rest.partition("\t")
+            clients, sid, raw, name = [*line.split("\t", 3), "", "", ""][:4]
             if name.strip():
                 live[name] = AgentState.parse(raw)
+                live.ids[name] = sid
                 if clients not in {"", "0"}:
                     attached.add(name)
         live.attached = frozenset(attached)
@@ -2185,28 +2199,38 @@ def connect(target: str) -> int:
     return connect_resolved(name, path, None, DEFAULT_SPLIT, derived_name=True)
 
 
-def kill(kind: str, name: str, client: str = "") -> int:
-    """Kill session NAME from a picker row. Only live session rows qualify; the
-    session the invoking client is attached to is refused with a message."""
-    if kind not in ("default", "tmux") or not name or not backend().exists(name):
+def kill(session_id: str, client: str = "") -> int:
+    """Kill the session with tmux id SESSION_ID (``$N``), from a picker row.
+
+    Only live session rows carry an id, so any other row is a no-op. A name
+    is no target: ``=$0`` means id $0 and ``=a.b`` means window b. The
+    session the invoking client is attached to is refused with a message.
+    """
+    if not re.fullmatch(r"\$[0-9]+", session_id):
+        return 0
+    listed = tmux_bytes("list-sessions", "-F", "#{session_id}\t#{session_name}")
+    names = dict(
+        line.partition("\t")[::2] for line in os.fsdecode(listed.stdout).splitlines()
+    )
+    if session_id not in names:
         return 0
     client = resolve_invoker(client)[0] or ""
     if client:
-        out = tmux_bytes("list-clients", "-F", "#{client_name}\t#{session_name}")
+        out = tmux_bytes("list-clients", "-F", "#{client_name}\t#{session_id}")
         for line in os.fsdecode(out.stdout).splitlines():
             cname, _, current = line.partition("\t")
-            if cname == client and current == name:
+            if cname == client and current == session_id:
                 tmux_cmd(
                     "display-message",
                     "-c",
                     client,
                     "-d",
                     "5000",
-                    f"tsesh: not killing the current session ({name})",
+                    f"tsesh: not killing the current session ({names[session_id]})",
                     check=False,
                 )
                 return 0
-    tmux_cmd("kill-session", "-t", exact_session_target(name), check=False)
+    tmux_cmd("kill-session", "-t", session_id, check=False)
     return 0
 
 
@@ -2330,8 +2354,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_list.add_argument("--prompt", default="", help=argparse.SUPPRESS)
 
         p_kill = sub.add_parser("kill")
-        p_kill.add_argument("--session", required=True)
-        p_kill.add_argument("--kind", default="tmux")
+        p_kill.add_argument("--session-id", default="")
         p_kill.add_argument("--client", default="")
 
         p_pick = sub.add_parser("picker")
@@ -2386,7 +2409,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.cmd == "fzf-enter":
             return fzf_enter()
         if args.cmd == "kill":
-            return kill(args.kind, args.session, args.client)
+            return kill(args.session_id, args.client)
         if args.cmd == "picker":
             return fzf(args.mode, query=args.query)
         if args.cmd == "pick-and-connect":
