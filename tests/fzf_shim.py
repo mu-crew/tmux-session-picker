@@ -31,7 +31,8 @@ def sh(cmd: str, prompt: str) -> str:
 
 def main() -> int:
     args = sys.argv[1:]
-    state = {"prompt": "", "header": "", "rows": sys.stdin.read().splitlines()}
+    text = {"prompt": "", "header": ""}  # what fzf shows above the rows
+    rows = sys.stdin.read().splitlines()
     binds: dict[str, str] = {}
     flags: list[str] = []
     i = 0
@@ -48,7 +49,7 @@ def main() -> int:
                         k, _, a = part.partition(":")
                         binds[k] = a
             else:
-                state[arg[2:]] = value
+                text[arg[2:]] = value
             i += 2
             continue
         flags.append(arg)
@@ -56,20 +57,22 @@ def main() -> int:
 
     def log(step: str) -> None:
         with open(os.environ["FZF_SHIM_LOG"], "a") as out:
-            out.write(json.dumps({"step": step, "flags": flags, **state}) + "\n")
+            state = {"step": step, "flags": flags, "rows": rows, **text}
+            out.write(json.dumps(state) + "\n")
 
     def apply(actions: str) -> None:
+        nonlocal rows
         for name, arg in ACTION.findall(actions.strip()):
             if name == "change-prompt":
-                state["prompt"] = arg
+                text["prompt"] = arg
             elif name == "reload":
-                state["rows"] = sh(arg, state["prompt"]).splitlines()
+                rows = sh(arg, text["prompt"]).splitlines()
                 if "load" in binds:
                     apply(binds["load"])
             elif name == "transform-header":
-                state["header"] = sh(arg, state["prompt"]).removesuffix("\n")
+                text["header"] = sh(arg, text["prompt"]).removesuffix("\n")
             elif name == "transform-prompt":
-                state["prompt"] = sh(arg, state["prompt"]).removesuffix("\n")
+                text["prompt"] = sh(arg, text["prompt"]).removesuffix("\n")
 
     if "load" in binds:
         apply(binds["load"])
@@ -77,10 +80,10 @@ def main() -> int:
     for key in filter(None, os.environ.get("FZF_SHIM_KEYS", "").split(",")):
         action = binds.get(key, "")
         if action.startswith("transform:"):
-            apply(sh(action.removeprefix("transform:"), state["prompt"]))
+            apply(sh(action.removeprefix("transform:"), text["prompt"]))
         log(key)
     if pick := os.environ.get("FZF_SHIM_PICK"):
-        for row in state["rows"]:
+        for row in rows:
             if re.search(pick, row):
                 print(row)
                 return 0

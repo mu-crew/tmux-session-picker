@@ -14,11 +14,12 @@ import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from shlex import quote as sh_quote
+from typing import TypeGuard
 
 # Bumped by hand at release time; see RELEASING.md.
 VERSION = "1.0.0-dev"
@@ -72,7 +73,7 @@ PINNED_SOCKET: str | None = None
 
 
 @contextlib.contextmanager
-def pinned_server(socket: str) -> Iterator[None]:
+def pinned_server(socket: str) -> Generator[None, None, None]:
     global PINNED_SOCKET
     previous, PINNED_SOCKET = PINNED_SOCKET, socket
     try:
@@ -712,9 +713,12 @@ def is_useful_path(path: str, *, mode: str, config: Config) -> bool:
 
 
 def require_str_list(value: object, key: str, path: Path) -> list[str]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not isinstance(value, list):
         raise ConfigError(f"{path}: {key} must be an array of strings")
-    return value
+    items = [item for item in value if isinstance(item, str)]
+    if len(items) != len(value):
+        raise ConfigError(f"{path}: {key} must be an array of strings")
+    return items
 
 
 LEGACY_CONFIG_PATH = Path.home() / ".config" / "tmux" / "tms.toml"
@@ -899,8 +903,13 @@ def _is_pane_id(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"%[0-9]+", value) is not None
 
 
+def is_object(value: object) -> TypeGuard[dict[str, object]]:
+    """A JSON object: a dict whose keys are all strings."""
+    return isinstance(value, dict) and all(isinstance(k, str) for k in value)
+
+
 def _is_server(value: object) -> bool:
-    if not isinstance(value, dict):
+    if not is_object(value):
         return False
     kind = value.get("kind")
     if kind == "default":
@@ -949,7 +958,7 @@ PANE_FIELDS = {
 
 
 def valid_pane(pane: object) -> bool:
-    if not isinstance(pane, dict):
+    if not is_object(pane):
         return False
     return all(k in pane and check(pane[k]) for k, check in PANE_FIELDS.items())
 
@@ -958,7 +967,7 @@ def valid_peer(peer: object) -> bool:
     """A peer as the session notice reads it; fetched_at and target are
     optional (target is the ssh target, which can differ from the name)."""
     return (
-        isinstance(peer, dict)
+        is_object(peer)
         and _is_str(peer.get("name"))
         and _is_bool(peer.get("needs_session"))
         and _is_time(peer.get("fetched_at"))
@@ -1120,7 +1129,7 @@ def resolve_own_socket() -> str | None:
 
 def server_socket(server: object) -> str | None:
     """The socket a murmur ``server`` value names; None if it is not understood."""
-    if not isinstance(server, dict):
+    if not is_object(server):
         return None
     kind, value = server.get("kind"), server.get("value")
     if kind == "default":
@@ -1213,8 +1222,9 @@ def pane_state(pane: dict) -> AgentState:
     return AgentState[str(pane["render_state"])]
 
 
-def agent_entry(pane: dict, **fields: object) -> Entry:
-    """An agent row: the payload every view shares, plus FIELDS."""
+def agent_entry(pane: dict, *, detail: str = "", text: str = "") -> Entry:
+    """An agent row: the payload every view shares, with the all view's
+    DETAIL or the agents view's pre-rendered TEXT."""
     is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
     pane_id = clean_field(pane.get("pane"))
     current = is_here and pane_id == current_location()[0]
@@ -1230,7 +1240,8 @@ def agent_entry(pane: dict, **fields: object) -> Entry:
         here="1" if is_here else "",
         socket=(own_socket() or "") if is_here else "",
         marker="current" if current else "",
-        **fields,
+        detail=detail,
+        text=text,
     )
 
 
@@ -1423,7 +1434,8 @@ def build_view(
             if not active:
                 continue  # idle agents never colour a row
             strongest = max(active)
-            if states.get(name) is None or states[name] < strongest:
+            current = states.get(name)
+            if current is None or current < strongest:
                 states[name] = strongest
         if mode == "all":
             entries.extend(agent_rows)
