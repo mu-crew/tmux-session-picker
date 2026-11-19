@@ -2,7 +2,8 @@
 
 `tsesh` is a tmux session picker. One fzf popup lists pinned sessions, live
 sessions, zoxide directories and a directory scan. Pick a row and tsesh
-switches to that session, creating it in the directory first if needed.
+switches to that session, creating it in the directory first if needed. With
+murmur, the same popup also lists coding agents and jumps to them.
 
 If [murmur](https://github.com/mu-crew/murmur) runs on the machine, each
 session also shows its coding agents' state: crashed, error, blocked, done,
@@ -33,6 +34,7 @@ run-shell ~/path/to/tmux-session-picker/tsesh.tmux
 | Prefix + | Does | Option |
 | --- | --- | --- |
 | `s` | Picker popup | `@tsesh_key_pick` |
+| `a` | Picker popup, agents view | `@tsesh_key_agents` |
 | `g` | Last session | `@tsesh_key_last` |
 | `T` | Session rooted at the current pane's directory | `@tsesh_key_root` |
 
@@ -49,14 +51,20 @@ Inside the picker:
 
 | Key | Does |
 | --- | --- |
-| `ctrl-a` | All view: pinned, live, zoxide (the default) |
+| `ctrl-a` | All view: pinned, live, agents needing attention, zoxide (the default) |
 | `ctrl-s` | Sessions view: pinned and live sessions |
+| `ctrl-g` | Agents view; again in the agents view: show or hide crew agents |
 | `ctrl-f` | Find view: directory scan under `$HOME` |
 | `tab` / `shift-tab` | Down / up |
-| `enter` | Switch to the row, creating the session first if needed |
+| `enter` | Switch to the row, creating the session first if needed, or jump to the agent |
 | `esc` / `ctrl-c` | Abort |
 
-`tsesh list|picker|pick-and-connect --mode` takes `all`, `sessions` or `find`.
+`tsesh list|picker|pick-and-connect --mode` takes `all`, `sessions`, `find` or
+`agents`; `tsesh list --mode agents --crew` includes crew agents.
+
+The first column marks where you are: `◆` is the session (and, in the agents
+view, the agent pane) of the client that opened the picker, and `◇` is a
+session another client has attached.
 
 ## Versions
 
@@ -103,6 +111,28 @@ tsesh probes for this (`status --json --cached` succeeds with well-formed
 panes, and `jump --help` exits 0); it never compares versions. A malformed
 snapshot is ignored as a whole. With no murmur, or an older one,
 everything works from `@murmur_session_state` as before.
+
+### Agents view
+
+`prefix a`, `ctrl-g` in the picker, or `tsesh pick-and-connect --mode agents`
+lists every agent murmur shows by default (human agents, plus crew agents that
+need a human), in murmur's order. `ctrl-g` again shows or hides the other crew
+(orchestrated) agents; the prompt starts with `crew` while they are shown, and
+the setting holds when you switch views and come back (in the all view it
+adds crew agents to the attention rows). Each row has the state,
+the agent's name, its workstream (or tmux session) when that differs from the
+name, a host column (`here` or `→ host`) when any agent is remote, and the age
+of its last update. The prompt counts the shown agents per state.
+
+When a peer needs a new ssh session, murmur's notice is the first header line.
+An empty view says so ("No agents", or how many crew agents are hidden) and
+stays open until `esc`. Without murmur, or with one too old for the view, the
+header says that instead.
+
+The agents view starts no tmux server and works outside tmux. Enter moves the
+client itself only when the picker runs inside the agent's tmux server;
+otherwise it runs `murmur jump`, which handles other hosts and servers and
+any confirmation it needs on the terminal.
 
 ## Server lifetime
 

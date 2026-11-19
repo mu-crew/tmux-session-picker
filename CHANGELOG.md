@@ -29,7 +29,21 @@ versions follow [SemVer](https://semver.org/).
 - The picker key now runs through `run-shell` and passes `--client`, so a
   failure is shown on the client that opened the picker.
 
+- Agents view: `prefix a` (`@tsesh_key_agents`), `ctrl-g` in the picker or
+  `--mode agents` lists murmur's agents with state, name, workstream, host and
+  age, per-state counts in the prompt, and murmur's session notice in the
+  header. `ctrl-g` again toggles crew agents; the toggle survives view
+  switches. Works outside tmux; Enter jumps through `murmur jump` unless the
+  picker runs inside the agent's tmux server. An empty view, a missing murmur
+  and a too-old murmur are said in the header.
+- `◆` marks the invoking client's session and agent pane, `◇` sessions
+  attached by another client. The legend lists `^g`.
+- The view keys are fzf `transform` bindings (`tsesh fzf-action`); each view
+  sets its own header and prompt.
+
 ### Fixed
+
+- Switching sessions from the popup moves the client that opened it.
 
 - A new session for a directory no longer lands in another directory's session
   when their names sanitize alike (`a.b` and `a_b`); the second is suffixed
