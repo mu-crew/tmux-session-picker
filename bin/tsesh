@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import enum
+import json
 import os
 import re
 import shutil
@@ -145,6 +147,8 @@ def start_server_in_own_scope(new_session: tuple[str, ...]) -> bool:
 
 
 DISPLAY_NAME_WIDTH = 30
+# Room for three "glyph+count" groups; the header and every row share it.
+STATE_WIDTH = 11
 DEFAULT_SPLIT = ""
 CONFIG_PATH = Path(
     os.environ.get("TSESH_CONFIG")
@@ -164,6 +168,7 @@ KIND_ICON = {
     "tmux": "●",
     "zoxide": "◦",
     "find": "·",
+    "agent": "◈",
 }
 
 # THEME BEGIN: tsesh-palette
@@ -195,6 +200,7 @@ KIND_FG: dict[str, str] = {
     "tmux": CATPPUCCIN["sky"],
     "zoxide": CATPPUCCIN["sapphire"],
     "find": CATPPUCCIN["subtext0"],
+    "agent": CATPPUCCIN["lavender"],
 }
 
 FZF_BORDER_LABEL = " sessions "
@@ -245,6 +251,10 @@ FZF_ROW_FIELDS: tuple[str, ...] = (
     "path",
     "startup",
     "split",
+    "host",  # agent rows: murmur host name
+    "pane",  # agent rows: tmux pane id
+    "jump_target",  # agent rows: murmur's opaque token for `murmur jump`
+    "here",  # agent rows: "1" when the pane is on the tmux server tsesh talks to
 )
 
 
@@ -258,6 +268,13 @@ class Entry:
     split: str = ""
     worst_state: AgentState | None = None
     is_running: bool = False
+    # murmur's per-state agent counts for a session row, strongest first.
+    agent_counts: tuple[tuple[AgentState, int], ...] = ()
+    host: str = ""
+    pane: str = ""
+    jump_target: str = ""
+    here: str = ""
+    detail: str = ""  # shown where a path would be (agent rows)
 
     @property
     def icon(self) -> str:
@@ -269,6 +286,8 @@ class Entry:
 
     @property
     def display_path(self) -> str:
+        if self.detail:
+            return self.detail
         if not self.path:
             return ""
         return tildify(self.path)
@@ -276,10 +295,16 @@ class Entry:
     def visible_text(self) -> str:
         name = self.display_name.ljust(DISPLAY_NAME_WIDTH)
         ws = self.worst_state
-        glyph = STATE_GLYPH[ws] if ws else " "
-        text = f"{self.icon}  {name} {glyph}"
+        if self.agent_counts:
+            cell = " ".join(
+                f"{STATE_GLYPH[state]}{min(n, 99)}"
+                for state, n in self.agent_counts[:3]
+            )
+        else:
+            cell = STATE_GLYPH[ws] if ws else " "
+        text = f"{self.icon}  {name} {cell}"
         if self.display_path:
-            text = f"{text}      {self.display_path}"
+            text = f"{text}{' ' * (STATE_WIDTH - len(cell))}{self.display_path}"
         # Agent states win over the kind colour: a blocked or crashed agent
         # must still show when the session is also pinned or live.
         if style := STATE_STYLE.get(self.worst_state):
@@ -299,6 +324,10 @@ class Entry:
             "path": self.path,
             "startup": self.startup,
             "split": self.split,
+            "host": self.host,
+            "pane": self.pane,
+            "jump_target": self.jump_target,
+            "here": self.here,
         }
         return "\t".join(values[name] for name in FZF_ROW_FIELDS)
 
@@ -335,6 +364,10 @@ class EntryPayload:
     path: str | None = None
     startup: str | None = None
     split: str = DEFAULT_SPLIT
+    host: str = ""
+    pane: str = ""
+    jump_target: str = ""
+    here: str = ""
 
     @classmethod
     def from_fzf_row(cls, row: str) -> EntryPayload:
@@ -345,6 +378,10 @@ class EntryPayload:
             path=fields["path"] or None,
             startup=fields["startup"] or None,
             split=fields["split"] or DEFAULT_SPLIT,
+            host=fields["host"],
+            pane=fields["pane"],
+            jump_target=fields["jump_target"],
+            here=fields["here"],
         )
 
 
@@ -422,7 +459,9 @@ def header_text() -> str:
         ("enter open", CATPPUCCIN["overlay0"]),
     ]
     legend = "  " + " ".join(ansi_style(label, fg=color) for label, color in items)
-    columns = f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(7)}path"
+    columns = (
+        f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(STATE_WIDTH)}path"
+    )
     return f"{legend}\n{UNDERLINE}{columns}{RESET}"
 
 
@@ -696,6 +735,122 @@ def build_path_entries(
     return entries
 
 
+def murmur_command() -> str | None:
+    return shutil.which(os.environ.get("TSESH_MURMUR", "murmur"))
+
+
+def murmur_panes() -> list[dict] | None:
+    """murmur's agent panes, or None when murmur is absent or too old.
+
+    One cache-only read (``status --json --cached``: it never reaches a peer),
+    under a short timeout. Capability is probed by the call itself: it must
+    succeed and the panes must carry the derived fields tsesh consumes
+    (``render_state``, ``jump_target``). Version numbers are never compared. On
+    success a detached ``collect`` warms the cache for the next open.
+    """
+    exe = murmur_command()
+    if exe is None:
+        return None
+    timeout = float(os.environ.get("TSESH_MURMUR_TIMEOUT", "1"))
+    try:
+        result = subprocess.run(
+            [exe, "status", "--json", "--cached"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        data = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    panes = data.get("panes") if isinstance(data, dict) else None
+    if not isinstance(panes, list) or not all(
+        isinstance(p, dict) and "render_state" in p and "jump_target" in p
+        for p in panes
+    ):
+        return None
+    with contextlib.suppress(OSError):
+        subprocess.Popen(
+            [exe, "collect", "--quiet", "--floored"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    return panes
+
+
+def tsesh_server() -> dict[str, str]:
+    """This process's tmux server, spelled as murmur's ``server`` field."""
+    if path := os.environ.get("TSESH_TMUX_SOCKET_PATH"):
+        return {"kind": "path", "value": path}
+    if name := os.environ.get("TSESH_TMUX_SOCKET_NAME"):
+        return {"kind": "label", "value": name}
+    return {"kind": "default"}
+
+
+def clean_field(value: object) -> str:
+    """A murmur string made safe for one tab-separated row field."""
+    return re.sub(r"[\t\r\n]+", " ", str(value or ""))
+
+
+def age_text(updated_ms: object, now_ms: float | None = None) -> str:
+    if not isinstance(updated_ms, (int, float)) or isinstance(updated_ms, bool):
+        return ""
+    now = time.time() * 1000 if now_ms is None else now_ms
+    seconds = max(0, int((now - updated_ms) / 1000))
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{seconds // size}{unit}"
+    return f"{seconds}s"
+
+
+ATTENTION_ROW_STATES = {"crashed", "error", "blocked", "done"}
+
+
+def agent_entries(
+    panes: list[dict], live: Mapping[str, object]
+) -> tuple[list[Entry], dict[str, dict[AgentState, int]]]:
+    """Attention rows for the all view, and per-session state counts.
+
+    panes[] already arrives most-urgent first; it is not re-sorted. Only panes
+    on the tmux server tsesh talks to count toward a live session's row.
+    """
+    here_server = tsesh_server()
+    counts: dict[str, dict[AgentState, int]] = {}
+    rows: list[Entry] = []
+    for pane in panes:
+        state = AgentState.parse(str(pane.get("render_state", "")))
+        is_here = bool(pane.get("local")) and pane.get("server") == here_server
+        session = clean_field(pane.get("session_name"))
+        if state is not None and is_here and session in live:
+            per = counts.setdefault(session, {})
+            per[state] = per.get(state, 0) + 1
+        if (
+            state is not None
+            and str(pane.get("render_state")) in ATTENTION_ROW_STATES
+            and pane.get("visible")
+        ):
+            where = f"{session}:{clean_field(pane.get('window_name'))}".strip(":")
+            parts = [clean_field(pane.get("host")), where]
+            parts.append(age_text(pane.get("updated_at")))
+            rows.append(
+                Entry(
+                    kind="agent",
+                    name=clean_field(pane.get("label") or pane.get("agent_name")),
+                    session_name=session,
+                    worst_state=state,
+                    is_running=True,
+                    host=clean_field(pane.get("host")),
+                    pane=clean_field(pane.get("pane")),
+                    jump_target=clean_field(pane.get("jump_target")),
+                    here="1" if is_here else "",
+                    detail=" · ".join(p for p in parts if p),
+                )
+            )
+    return rows, counts
+
+
 def build_entries(
     mode: str, live: Mapping[str, AgentState | None] | None = None
 ) -> list[Entry]:
@@ -706,8 +861,21 @@ def build_entries(
     if live is None:
         live = backend().live_sessions()
     live_names = set(live)
-    states = live
+    states = dict(live)
     entries: list[Entry] = []
+    session_counts: dict[str, dict[AgentState, int]] = {}
+    if mode in {"all", "sessions"} and (panes := murmur_panes()) is not None:
+        agent_rows, session_counts = agent_entries(panes, live)
+        for name, per in session_counts.items():
+            strongest = max(per)
+            if states.get(name) is None or states[name] < strongest:
+                states[name] = strongest
+        if mode == "all":
+            entries.extend(agent_rows)
+
+    def counts_for(name: str) -> tuple[tuple[AgentState, int], ...]:
+        per = session_counts.get(name, {})
+        return tuple(sorted(per.items(), key=lambda item: -item[0]))
 
     if mode in {"all", "sessions"}:
         entries.extend(
@@ -720,6 +888,7 @@ def build_entries(
                 split=session.split,
                 worst_state=states.get(session.name),
                 is_running=session.name in live_names,
+                agent_counts=counts_for(session.name),
             )
             for session in configured_sessions
         )
@@ -736,6 +905,7 @@ def build_entries(
                     session_name=session_name,
                     worst_state=states.get(session_name),
                     is_running=True,
+                    agent_counts=counts_for(session_name),
                 )
             )
 
@@ -861,7 +1031,25 @@ def tmux_session_preview(name: str) -> int:
     return 0
 
 
-def preview(path: str, session_name: str = "", kind: str = "", split: str = "") -> int:
+def preview(
+    path: str,
+    session_name: str = "",
+    kind: str = "",
+    split: str = "",
+    host: str = "",
+    pane: str = "",
+    here: str = "",
+) -> int:
+    if kind == "agent":
+        if here and pane:
+            capture = tmux_cmd(
+                "capture-pane", "-p", "-J", "-t", pane, "-S", "-200", check=False
+            )
+            if capture.returncode == 0:
+                print(capture.stdout.rstrip())
+                return 0
+        print(f"host: {host or '(unknown)'}\nsession: {session_name or '(unknown)'}")
+        return 0
     if kind in {"tmux", "default"} and session_name and backend().exists(session_name):
         return tmux_session_preview(session_name)
 
@@ -932,7 +1120,7 @@ def _fzf_command(mode: str, query: str = "") -> list[str]:
         "--preview-window",
         "right:55%,border-left",
         "--preview",
-        f"{sh_quote(sys.argv[0])} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}}",
+        f"{sh_quote(sys.argv[0])} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}}",
     ]
     if load_config().fzf_exact:
         # Substring (literal) matching only. Prefix a token with `'` to opt
@@ -982,6 +1170,8 @@ def pick_and_connect(mode: str = "all", query: str = "") -> int:
     if not choice:
         return 1
     payload = EntryPayload.from_fzf_row(choice)
+    if payload.kind == "agent":
+        return connect_agent(payload)
     return connect_resolved(
         payload.session_name,
         payload.path,
@@ -989,6 +1179,25 @@ def pick_and_connect(mode: str = "all", query: str = "") -> int:
         payload.split,
         derived_name=payload.kind in {"zoxide", "find"},
     )
+
+
+def connect_agent(payload: EntryPayload) -> int:
+    """Take the user to an agent's pane.
+
+    A pane on this tmux server is selected here (pane ids are unique only per
+    server) and the client moved to it. Anything else, such as a remote host or
+    a private tmux server, is murmur's to reach: ``murmur jump``.
+    """
+    if payload.here and payload.pane:
+        tmux_cmd("select-window", "-t", payload.pane)
+        tmux_cmd("select-pane", "-t", payload.pane)
+        backend().switch(payload.session_name, target=payload.pane)
+        return 0
+    exe = murmur_command()
+    if exe is None or not payload.jump_target:
+        print("agent: murmur is needed to reach this agent", file=sys.stderr)
+        return 1
+    return subprocess.run([exe, "jump", payload.jump_target], check=False).returncode
 
 
 def update_last(name: str) -> None:
@@ -1322,6 +1531,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_preview.add_argument("--session-name", default="")
         p_preview.add_argument("--path", default="")
         p_preview.add_argument("--split", default=DEFAULT_SPLIT)
+        p_preview.add_argument("--host", default="")
+        p_preview.add_argument("--pane", default="")
+        p_preview.add_argument("--here", default="")
 
         sub.add_parser("last")
 
@@ -1340,7 +1552,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                 return 1
             return connect(target)
         if args.cmd == "preview":
-            return preview(args.path, args.session_name, args.kind, args.split)
+            return preview(
+                args.path,
+                args.session_name,
+                args.kind,
+                args.split,
+                args.host,
+                args.pane,
+                args.here,
+            )
         if args.cmd == "last":
             return last()
         return 1

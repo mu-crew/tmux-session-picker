@@ -77,6 +77,23 @@ tsesh reads one tmux option per session, `@murmur_session_state`, in a single
 session's agents. Any tool can set it; the values are `crashed`, `error`,
 `blocked`, `done`, `working` and `waiting`.
 
+### Richer view with a current murmur
+
+When the installed murmur supports it, tsesh also reads `murmur status --json
+--cached` once per open (cache-only, one second timeout; a detached
+`murmur collect --quiet --floored` warms the cache for the next open). Then:
+
+- a session row shows how many agents are in each state (`2 working, 1 done`
+  as glyph and count) instead of only the strongest state;
+- agents that need attention (crashed, error, blocked, done) get their own rows
+  at the top of the all view, in murmur's order. Enter on one selects its pane
+  and switches to it; agents on another host or tmux server go through
+  `murmur jump`.
+
+tsesh probes for this (the call succeeds and panes carry `render_state` and
+`jump_target`); it never compares versions. With no murmur, or an older one,
+everything works from `@murmur_session_state` as before.
+
 ## Server lifetime
 
 When tsesh starts the tmux server from inside a unit of the systemd user

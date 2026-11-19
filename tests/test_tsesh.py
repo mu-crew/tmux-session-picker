@@ -32,6 +32,13 @@ def load_tsesh():
 
 tsesh = load_tsesh()
 State = tsesh.AgentState
+
+
+def setUpModule():
+    # Never read the real murmur's state: tests that want one install a fake.
+    os.environ["TSESH_MURMUR"] = "/nonexistent/murmur-for-tests"
+
+
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -1024,6 +1031,259 @@ class ServerScope(unittest.TestCase):
     def test_dollar_in_name_reaches_tmux_verbatim(self):
         tsesh.TmuxBackend().create("literal-${USER}", "/", None)
         self.assertEqual(list(tsesh.TmuxBackend().live_sessions()), ["literal-${USER}"])
+
+
+FAKE_MURMUR = """#!/usr/bin/env python3
+import os, sys, time
+with open(os.environ["FAKE_MURMUR_LOG"], "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\\n")
+args = sys.argv[1:]
+if args[:3] == ["status", "--json", "--cached"]:
+    mode = os.environ.get("FAKE_MURMUR_MODE", "ok")
+    if mode == "old":
+        sys.stderr.write("error: unknown option '--cached'\\n")
+        sys.exit(1)
+    if mode == "slow":
+        time.sleep(5)
+    sys.stdout.write(open(os.environ["FAKE_MURMUR_JSON"]).read())
+    sys.exit(0)
+if args[:1] == ["jump"]:
+    sys.exit(int(os.environ.get("FAKE_MURMUR_JUMP_RC", "0")))
+"""
+
+
+def agent_pane(**over):
+    pane = {
+        "pane": "%1",
+        "local": True,
+        "host": "box",
+        "host_id": "h1",
+        "server": {"kind": "default"},
+        "session_name": "notes",
+        "window": "@1",
+        "window_name": "editor",
+        "agent_name": "a",
+        "label": "agent-a",
+        "render_state": "blocked",
+        "visible": True,
+        "jump_target": "j1:abc",
+        "updated_at": None,
+    }
+    pane.update(over)
+    return pane
+
+
+class FakeMurmur(unittest.TestCase):
+    """A murmur on PATH-equivalent (TSESH_MURMUR) that records its calls."""
+
+    def install(self, panes, mode="ok"):
+        import json
+
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.log = self.dir / "log"
+        self.log.write_text("")
+        script = self.dir / "murmur"
+        script.write_text(FAKE_MURMUR)
+        script.chmod(0o755)
+        (self.dir / "status.json").write_text(
+            json.dumps({"counts": {}, "panes": panes, "peers": []})
+        )
+        env = {
+            "TSESH_MURMUR": str(script),
+            "FAKE_MURMUR_LOG": str(self.log),
+            "FAKE_MURMUR_JSON": str(self.dir / "status.json"),
+            "FAKE_MURMUR_MODE": mode,
+        }
+        patch = unittest.mock.patch.dict(os.environ, env)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def calls(self):
+        return self.log.read_text().splitlines()
+
+    def wait_for_call(self, prefix):
+        import time
+
+        for _ in range(40):
+            if any(c.startswith(prefix) for c in self.calls()):
+                return True
+            time.sleep(0.05)
+        return False
+
+
+class MurmurProbe(FakeMurmur):
+    def test_no_murmur_means_no_snapshot(self):
+        self.assertIsNone(tsesh.murmur_panes())  # TSESH_MURMUR is nonexistent
+
+    def test_capable_murmur_gives_panes_and_warms_the_cache(self):
+        self.install([agent_pane()])
+        panes = tsesh.murmur_panes()
+        self.assertEqual([p["label"] for p in panes], ["agent-a"])
+        self.assertIn("status --json --cached", self.calls())
+        self.assertTrue(self.wait_for_call("collect --quiet --floored"))
+
+    def test_old_murmur_without_cached_is_ignored(self):
+        self.install([agent_pane()], mode="old")
+        self.assertIsNone(tsesh.murmur_panes())
+        self.assertFalse(any(c.startswith("collect") for c in self.calls()))
+
+    def test_panes_without_derived_fields_are_ignored(self):
+        pane = agent_pane()
+        del pane["render_state"]
+        self.install([pane])
+        self.assertIsNone(tsesh.murmur_panes())
+
+    def test_slow_murmur_times_out(self):
+        self.install([agent_pane()], mode="slow")
+        with unittest.mock.patch.dict(os.environ, {"TSESH_MURMUR_TIMEOUT": "0.2"}):
+            self.assertIsNone(tsesh.murmur_panes())
+
+
+class MurmurRows(FakeMurmur):
+    def setUp(self):
+        cfg = config(sessions=(tsesh.SessionConfig(name="pinned", path="/tmp/pinned"),))
+        for owner, attr, value in (
+            (tsesh, "load_config", lambda: cfg),
+            (tsesh, "zoxide_paths", list),
+            (
+                tsesh.TmuxBackend,
+                "snapshot",
+                lambda self: {"notes": None, "other": State.working},
+            ),
+        ):
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
+
+    def rows(self, mode="all"):
+        return tsesh.build_entries(mode)
+
+    def test_attention_agents_lead_the_all_view(self):
+        self.install(
+            [
+                agent_pane(label="first", render_state="crashed"),
+                agent_pane(pane="%2", label="busy", render_state="working"),
+                agent_pane(pane="%3", label="second", render_state="done"),
+            ]
+        )
+        entries = self.rows()
+        agents = [e for e in entries if e.kind == "agent"]
+        self.assertEqual([e.name for e in agents], ["first", "second"])
+        self.assertEqual([e.kind for e in entries[:2]], ["agent", "agent"])
+        self.assertEqual(agents[0].worst_state, State.crashed)
+
+    def test_agent_rows_are_not_in_the_sessions_view(self):
+        self.install([agent_pane()])
+        self.assertFalse([e for e in self.rows("sessions") if e.kind == "agent"])
+
+    def test_invisible_agents_get_no_row(self):
+        self.install([agent_pane(visible=False)])
+        self.assertFalse([e for e in self.rows() if e.kind == "agent"])
+
+    def test_session_row_shows_a_state_breakdown(self):
+        self.install(
+            [
+                agent_pane(pane="%1", render_state="working"),
+                agent_pane(pane="%2", render_state="working"),
+                agent_pane(pane="%3", render_state="done"),
+                agent_pane(pane="%4", render_state="idle"),
+            ]
+        )
+        notes = next(e for e in self.rows() if e.name == "notes")
+        text = ANSI.sub("", notes.visible_text())
+        self.assertIn(f"{tsesh.STATE_GLYPH[State.working]}2", text)
+        self.assertIn(f"{tsesh.STATE_GLYPH[State.done]}1", text)
+        self.assertNotIn("idle", text)
+
+    def test_other_servers_do_not_count_toward_sessions(self):
+        self.install([agent_pane(server={"kind": "label", "value": "private"})])
+        notes = next(e for e in self.rows() if e.name == "notes")
+        self.assertEqual(notes.agent_counts, ())
+        agent = next(e for e in self.rows() if e.kind == "agent")
+        self.assertEqual(agent.here, "")
+
+    def test_no_murmur_is_todays_behaviour(self):
+        entries = self.rows()
+        self.assertFalse([e for e in entries if e.kind == "agent"])
+        self.assertEqual([e.name for e in entries][:1], ["pinned"])
+
+    def test_agent_row_survives_the_fzf_round_trip(self):
+        self.install([agent_pane()])
+        row = next(e for e in self.rows() if e.kind == "agent").to_fzf_row()
+        payload = tsesh.EntryPayload.from_fzf_row(row)
+        self.assertEqual(
+            (payload.kind, payload.pane, payload.jump_target, payload.here),
+            ("agent", "%1", "j1:abc", "1"),
+        )
+
+
+class AgentEnter(FakeMurmur):
+    def pick(self, entry):
+        old = tsesh.run_fzf
+        tsesh.run_fzf = lambda mode, query, *, capture: subprocess.CompletedProcess(
+            [], 0, stdout=entry.to_fzf_row() + "\n"
+        )
+        self.addCleanup(setattr, tsesh, "run_fzf", old)
+        return tsesh.pick_and_connect()
+
+    def agent_entry(self, **over):
+        self.install([agent_pane(**over)])
+        with unittest.mock.patch.object(
+            tsesh.TmuxBackend, "snapshot", lambda self: {"notes": None}
+        ):
+            cfg = config()
+            with unittest.mock.patch.object(tsesh, "load_config", lambda: cfg):
+                return next(e for e in tsesh.build_entries("all") if e.kind == "agent")
+
+    def test_other_server_goes_through_murmur_jump(self):
+        entry = self.agent_entry(server={"kind": "label", "value": "private"})
+        self.assertEqual(self.pick(entry), 0)
+        self.assertIn("jump j1:abc", self.calls())
+
+    def test_failed_jump_is_reported(self):
+        entry = self.agent_entry(server={"kind": "label", "value": "private"})
+        with unittest.mock.patch.dict(os.environ, {"FAKE_MURMUR_JUMP_RC": "1"}):
+            self.assertEqual(self.pick(entry), 1)
+
+    @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+    def test_local_agent_selects_its_pane_then_switches(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        sock = tmp / "s"
+        tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
+        subprocess.run([*tmux, "new-session", "-d", "-s", "notes"], check=True)
+        subprocess.run([*tmux, "new-window", "-t", "notes:", "-n", "two"], check=True)
+        subprocess.run([*tmux, "split-window", "-t", "notes:two"], check=True)
+        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        panes = subprocess.run(
+            [*tmux, "list-panes", "-t", "notes:two", "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        target = panes[0]
+        subprocess.run([*tmux, "select-window", "-t", "notes:0"], check=True)
+        server = {"kind": "path", "value": str(sock)}
+        with unittest.mock.patch.dict(
+            os.environ, {"TSESH_TMUX_SOCKET_PATH": str(sock)}
+        ):
+            entry = self.agent_entry(pane=target, server=server)
+            switched = []
+            with unittest.mock.patch.object(
+                tsesh.TmuxBackend,
+                "switch",
+                lambda self, name, target=None: switched.append((name, target)),
+            ):
+                self.assertEqual(self.pick(entry), 0)
+            active = subprocess.run(
+                [*tmux, "display-message", "-p", "-t", "notes", "#{pane_id}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        self.assertEqual(switched, [("notes", target)])
+        self.assertEqual(active, target)
+        self.assertFalse(any(c.startswith("jump") for c in self.calls()))
 
 
 if __name__ == "__main__":

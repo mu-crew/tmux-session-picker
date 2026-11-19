@@ -20,6 +20,12 @@ versions follow [SemVer](https://semver.org/).
 - murmur's `error` and `waiting` agent states, with murmur's glyphs. `error`
   counts as needing attention.
 
+- With a current murmur: per-state agent counts on session rows, and attention
+  agents as rows at the top of the all view. Enter selects the agent's pane or
+  hands off to `murmur jump`. Probed by feature, falls back to
+  `@murmur_session_state` without murmur. The picker row gained `host`,
+  `pane`, `jump_target` and `here` fields, and the state column is wider.
+
 ### Fixed
 
 - A new session for a directory no longer lands in another directory's session
