@@ -55,6 +55,7 @@ Inside the picker:
 | `ctrl-s` | Sessions view: pinned and live sessions |
 | `ctrl-g` | Agents view; again in the agents view: show or hide crew agents |
 | `ctrl-f` | Find view: directory scan under `$HOME` |
+| `ctrl-x` | Kill the highlighted session (session rows only; refuses the session you are in) |
 | `tab` / `shift-tab` | Down / up |
 | `enter` | Switch to the row, creating the session first if needed, or jump to the agent |
 | `esc` / `ctrl-c` | Abort |

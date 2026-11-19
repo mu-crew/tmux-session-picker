@@ -9,6 +9,7 @@ import io
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -466,8 +467,10 @@ class PickerKeys(unittest.TestCase):
         cmd = tsesh._fzf_command("all")
         spec = " ".join(a for i, a in enumerate(cmd) if cmd[i - 1] == "--bind")
         binds = set(re.findall(r"(?:^|[\s,])([a-z-]+):", spec))
-        self.assertTrue({"ctrl-a", "ctrl-s", "ctrl-f", "tab", "btab"} <= binds)
-        for gone in ("ctrl-c", "ctrl-t", "ctrl-x"):
+        self.assertTrue(
+            {"ctrl-a", "ctrl-s", "ctrl-f", "ctrl-x", "tab", "btab"} <= binds
+        )
+        for gone in ("ctrl-c", "ctrl-t"):
             self.assertNotIn(gone, binds)
 
 
@@ -479,6 +482,12 @@ class LiveTmux(unittest.TestCase):
         self.socket = f"tsesh-test-{os.getpid()}"
         os.environ["TSESH_TMUX_SOCKET_NAME"] = self.socket
         self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_NAME", None)
+        # main() pins the server it resolved; do not leak that pin.
+        pins = unittest.mock.patch.multiple(
+            tsesh, PINNED_SOCKET=None, START_SOCKET=None
+        )
+        pins.start()
+        self.addCleanup(pins.stop)
         self.addCleanup(self.tmux, "kill-server")
         self.tmux("new-session", "-d", "-s", "busy")
         self.tmux("new-session", "-d", "-s", "quiet")
@@ -493,6 +502,71 @@ class LiveTmux(unittest.TestCase):
         self.tmux("set-option", "-t", "busy", "@murmur_session_state", "blocked")
         self.tmux("set-option", "-t", "odd", "@murmur_session_state", "bogus")
         self.assertEqual(tsesh.TmuxBackend().live_sessions()["busy"], State.blocked)
+
+    def sessions(self):
+        return sorted(tsesh.TmuxBackend().live_sessions())
+
+    def test_kill_removes_a_live_session_row(self):
+        self.assertEqual(tsesh.main(["kill", "--session", "quiet"]), 0)
+        self.assertEqual(self.sessions(), ["busy", "odd"])
+
+    def test_kill_ignores_non_session_rows_and_missing_sessions(self):
+        for kind in ("agent", "zoxide", "find"):
+            tsesh.main(["kill", "--kind", kind, "--session", "quiet"])
+        tsesh.main(["kill", "--kind", "default", "--session", "pinned-not-running"])
+        self.assertEqual(self.sessions(), ["busy", "odd", "quiet"])
+
+    def test_kill_refuses_the_clients_current_session_with_a_message(self):
+        import pty
+
+        self.addCleanup(self.tmux, "kill-server")
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvp("tmux", ["tmux", "-L", self.socket, "attach", "-t", "busy"])
+
+        def reap():
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+            for _ in range(100):
+                with contextlib.suppress(OSError):
+                    if os.waitpid(pid, os.WNOHANG)[0]:
+                        break
+                time.sleep(0.02)
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+        self.addCleanup(reap)
+        client = ""
+        for _ in range(100):
+            out = subprocess.run(
+                ["tmux", "-L", self.socket, "list-clients", "-F", "#{client_name}"],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.split()
+            if out:
+                client = out[0]
+                break
+            time.sleep(0.05)
+        self.assertTrue(client)
+        tsesh.main(["kill", "--session", "busy", "--client", client])
+        self.assertIn("busy", self.sessions())
+        tsesh.main(["kill", "--session", "quiet", "--client", client])
+        self.assertNotIn("quiet", self.sessions())
+        shown = subprocess.run(
+            ["tmux", "-L", self.socket, "show-messages", "-t", client],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("not killing the current session (busy)", shown)
+
+    def test_list_prompt_selects_the_view(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            tsesh.main(["list", "--prompt", tsesh.prompt_text("sessions")])
+        self.assertIn("busy", buf.getvalue())
+        self.assertNotIn("\tfind\t", buf.getvalue())
 
     def test_no_server_is_no_state(self):
         os.environ["TSESH_TMUX_SOCKET_NAME"] = f"{self.socket}-absent"

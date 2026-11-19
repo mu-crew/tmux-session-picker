@@ -16,6 +16,9 @@ versions follow [SemVer](https://semver.org/).
 
 ### Added
 
+- `ctrl-x` in the picker kills the highlighted session and redraws the view.
+  It ignores agent, zoxide and find rows and refuses the session the client is
+  in, with a tmux message. Also available as `tsesh kill --session NAME`.
 - `tsesh --version`.
 - murmur's `error` and `waiting` agent states, with murmur's glyphs. `error`
   counts as needing attention.
