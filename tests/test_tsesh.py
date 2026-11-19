@@ -479,7 +479,7 @@ class LiveTmux(unittest.TestCase):
     """live_sessions against a real, isolated tmux server."""
 
     def setUp(self):
-        self.socket = f"tsesh-test-{os.getpid()}"
+        self.socket = f"tsesh-test-{os.getpid()}-{self._testMethodName[-24:]}"
         os.environ["TSESH_TMUX_SOCKET_NAME"] = self.socket
         self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_NAME", None)
         # main() pins the server it resolved; do not leak that pin.
