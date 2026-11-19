@@ -90,8 +90,16 @@ When the installed murmur supports it, tsesh also reads `murmur status --json
   and switches to it; agents on another host or tmux server go through
   `murmur jump`.
 
-tsesh probes for this (the call succeeds and panes carry `render_state` and
-`jump_target`); it never compares versions. With no murmur, or an older one,
+Agent rows need murmur's `jump` command too. A remote agent counts under the
+local session that holds its ssh attachment. tsesh acts on a pane itself only
+when it has proven the agent's tmux server is the one it talks to (the
+`TSESH_TMUX_SOCKET_*` variables, else the socket in `$TMUX`, else the default);
+everything else goes through `murmur jump`. A failed jump stays on screen for a
+moment and shows as a tmux message.
+
+tsesh probes for this (`status --json --cached` succeeds with well-formed
+panes, and `jump --help` exits 0); it never compares versions. A malformed
+snapshot is ignored as a whole. With no murmur, or an older one,
 everything works from `@murmur_session_state` as before.
 
 ## Server lifetime
