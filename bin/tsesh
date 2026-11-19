@@ -1603,6 +1603,13 @@ def fzf_action(target: str) -> int:
     return 0
 
 
+def fzf_enter() -> int:
+    """fzf `transform` for Enter: accept only when a row matches."""
+    if os.environ.get("FZF_MATCH_COUNT", "1") != "0":
+        print("accept")
+    return 0
+
+
 VIEW_KEYS = {
     "ctrl-a": "all",
     "ctrl-s": "sessions",
@@ -1653,6 +1660,10 @@ def _fzf_command(
         "--bind",
         "tab:down,btab:up",
     ]
+    # Enter with nothing to pick must not close the picker: an empty agents
+    # view stays up, saying why, until esc. (accept-non-empty still exits on
+    # an empty list.)
+    cmd += ["--bind", f"enter:transform:{self_cmd} fzf-enter"]
     # transform: the binding decides per keypress from $FZF_PROMPT, so the
     # crew toggle holds across view switches (a fixed reload cannot know it).
     for key, view in VIEW_KEYS.items():
@@ -1678,6 +1689,12 @@ def _fzf_command(
     if query:
         cmd.extend(["--query", query])
     return cmd
+
+
+def fzf_env() -> dict[str, str]:
+    """Our environment without the user's fzf defaults: an inherited
+    --exit-0 or --select-1 would close the picker or pick for them."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("FZF_DEFAULT_OPTS")}
 
 
 def run_fzf(
@@ -1710,7 +1727,7 @@ def run_fzf(
             text=True,
             capture_output=capture,
             check=False,
-            env={**os.environ, PICKER_DIR_ENV: state_dir},
+            env={**fzf_env(), PICKER_DIR_ENV: state_dir},
         )
 
 
@@ -2168,6 +2185,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         # fzf's transform binding for the view keys; not for people.
         p_action = sub.add_parser("fzf-action")
         p_action.add_argument("view", choices=MODES)
+        sub.add_parser("fzf-enter")
 
         p_pick = sub.add_parser("picker")
         p_pick.add_argument(
@@ -2214,6 +2232,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             return print_entries(args.mode, args.crew)
         if args.cmd == "fzf-action":
             return fzf_action(args.view)
+        if args.cmd == "fzf-enter":
+            return fzf_enter()
         if args.cmd == "picker":
             return fzf(args.mode, query=args.query)
         if args.cmd == "pick-and-connect":

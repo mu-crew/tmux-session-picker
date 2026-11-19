@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -464,3 +465,63 @@ class AgentsKey(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("fzf"), "needs fzf")
+class RealFzf(Harness):
+    """The real fzf in a pane of the isolated server, keys sent by tmux."""
+
+    def picker(self, *args, **env):
+        full = {**self.env, "PATH": os.environ["PATH"], **env}
+        script = self.tmp / "picker.sh"
+        exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in full.items())
+        cmd = " ".join(shlex.quote(a) for a in (str(TSESH), *args))
+        script.write_text(f"{exports}{cmd}\necho EXIT=$?\nsleep 60\n")
+        script.chmod(0o755)
+        self.tmux("new-window", "-d", "-t", "notes:", "-n", "picker", str(script))
+
+    def screen(self, wait=0.0):
+        time.sleep(wait)
+        return self.tmux("capture-pane", "-p", "-t", "notes:picker")
+
+    def wait_for(self, text):
+        for _ in range(60):
+            if text in (screen := self.screen(0.1)):
+                return screen
+        self.fail(f"{text!r} never appeared:\n{self.screen()}")
+
+    def test_enter_on_the_empty_view_keeps_it_open(self):
+        self.picker("pick-and-connect", "--mode", "agents")
+        self.wait_for("No agents")
+        self.tmux("send-keys", "-t", "notes:picker", "Enter")
+        screen = self.screen(1.0)
+        self.assertNotIn("EXIT=", screen)
+        self.assertIn("No agents", screen)
+        self.tmux("send-keys", "-t", "notes:picker", "Escape")
+        self.assertIn("EXIT=0", self.wait_for("EXIT="))
+
+    def test_inherited_fzf_options_do_not_skip_the_view(self):
+        cases = (
+            ("--exit-0", [], "No agents"),
+            ("--select-1", [self.own(label="only-one")], "only-one"),
+        )
+        for opts, panes, shown in cases:
+            with self.subTest(opts=opts):
+                self.snapshot(panes)
+                self.tmux("kill-window", "-t", "notes:picker")
+                self.picker(
+                    "pick-and-connect", "--mode", "agents", FZF_DEFAULT_OPTS=opts
+                )
+                self.wait_for(shown)
+                self.assertNotIn("EXIT=", self.screen(1.0))
+                self.tmux("send-keys", "-t", "notes:picker", "Escape")
+                self.wait_for("EXIT=0")
+
+    def test_enter_on_a_row_still_picks_it(self):
+        self.snapshot([agent_pane(local=False, host="peer-a", jump_target="j9:x")])
+        Path(self.env["FAKE_MURMUR_LOG"]).write_text("")
+        self.picker("pick-and-connect", "--mode", "agents")
+        self.wait_for("agent-a")
+        self.tmux("send-keys", "-t", "notes:picker", "Enter")
+        self.assertIn("EXIT=0", self.wait_for("EXIT="))
+        self.assertIn("jump j9:x", self.murmur_calls())
