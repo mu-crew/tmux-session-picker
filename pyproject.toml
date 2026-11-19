@@ -1,0 +1,21 @@
+# Development tooling only. tsesh is a single zero-dependency script
+# (bin/tsesh) that users run as is; nothing here is installed.
+[project]
+name = "tsesh"
+version = "0.0.0"  # unused: releases are git tags, see RELEASING.md
+requires-python = ">=3.11"  # the script's floor (tomllib)
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["ruff==0.17.5", "ty==0.0.107"]
+
+[tool.ty.environment]
+python-version = "3.11"
+# tests import each other (test_tsesh) the way `unittest discover -s tests` does.
+root = ["tests"]
+
+[tool.ty.src]
+# bin/tsesh has no .py suffix, so it is named explicitly.
+include = ["bin/tsesh", "tests"]

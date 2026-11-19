@@ -9,7 +9,7 @@ tsesh has no package registry. TPM installs from git, so a release is a tag.
 4. Run the gate:
 
    ```sh
-   python3 -m unittest discover -s tests && ruff check . && ruff format --check .
+   uv run --frozen python -m unittest discover -s tests && uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run --frozen ty check
    ```
 
 5. Commit: `tsesh: release X.Y.Z`.

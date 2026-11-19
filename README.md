@@ -177,10 +177,16 @@ markers so a local theme generator can rewrite them.
 
 ## Development
 
+The gate, with ruff and ty pinned in `pyproject.toml` and `uv.lock` (needs
+[uv](https://docs.astral.sh/uv/)):
+
 ```sh
-python3 -m unittest discover -s tests
-ruff check . && ruff format --check .
+uv run --frozen python -m unittest discover -s tests && uv run --frozen ruff check . && uv run --frozen ruff format --check . && uv run --frozen ty check
 ```
+
+The tests run on uv's Python here; plain `python3 -m unittest discover -s
+tests` works too. tsesh itself needs none of this: `bin/tsesh` is a plain
+script with no dependencies.
 
 ---
 
