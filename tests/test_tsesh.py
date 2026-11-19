@@ -250,6 +250,35 @@ class ResponsiveLayout(unittest.TestCase):
         self.assertIn("\u2026", row.split("murmur", 1)[1])  # path cut at its start
         self.assertTrue(row.rstrip().endswith("tree/murmur +3"), row)
 
+    def test_escaped_text_fits_and_keeps_its_tail(self):
+        path = "/srv/backslashes-" + "\\" * 12 + "Z"
+        rows = [
+            tsesh.Entry(
+                kind="tmux",
+                name="esc\tname\\x",
+                session_name="e",
+                detail=path,
+                counts="1w 1p",
+            ),
+            tsesh.Entry(kind="zoxide", name="z", session_name="z", path=path + "\n2"),
+        ]
+        panes = [agent_pane(label="lab\\" * 20, workstream="w\\" * 20, local=False)]
+        for columns in (60, 100, 130, 160, 260):
+            with self.subTest(columns=columns):
+                layout = at_width(self, columns)
+                agents, _, _ = tsesh.agent_view_entries(panes, crew=False)
+                for entry in [*rows, *agents]:
+                    row = entry.to_fzf_row()
+                    shown = ANSI.sub("", row.split("\t", 1)[0])
+                    self.assertLessEqual(
+                        tsesh.cell_width(shown), layout.row_width, shown
+                    )
+                    fields = tsesh.Entry.from_fzf_row(row)
+                    self.assertEqual(fields["path"], entry.path)
+                self.assertTrue(
+                    ANSI.sub("", rows[0].to_fzf_row().split("\t")[0]).endswith("Z")
+                )
+
     def test_slashed_names_keep_their_leaf(self):
         names = [
             f"group-team-with-a-long-name/deploy/{leaf}"

@@ -533,7 +533,9 @@ class Entry:
             text = self.text
         else:
             layout = LAYOUT
-            name = fit(self.name, layout.name_width, keep="middle")
+            # Text is escaped before it is fitted: the escaped form is what
+            # fzf shows, so that is what must fit (see to_fzf_row).
+            name = fit(row_escape(self.name), layout.name_width, keep="middle")
             ws = self.worst_state
             if self.agent_counts:
                 cell = state_cell(self.agent_counts, layout.state_width)
@@ -547,7 +549,7 @@ class Entry:
                 note = ""
             room = layout.path_width - (len(note) + 1 if note else 0)
             if self.display_path and room > 0:
-                text += fit(self.display_path, room, keep="start")
+                text += fit(row_escape(self.display_path), room, keep="start")
             text = text.rstrip()
         dim = " " + ansi_style(note, fg=CATPPUCCIN["overlay0"]) if note else ""
         return marker_cell(self.marker) + self.styled(text) + dim
@@ -579,7 +581,12 @@ class Entry:
             "socket": self.socket,
             "session_id": self.session_id,
         }
-        return "\t".join(row_escape(values[name]) for name in FZF_ROW_FIELDS)
+        # The display is escaped piece by piece in visible_text, before its
+        # columns are fitted; escaping it again would widen it past the list.
+        return "\t".join(
+            values[name] if name == "display" else row_escape(values[name])
+            for name in FZF_ROW_FIELDS
+        )
 
     @classmethod
     def from_fzf_row(cls, row: str) -> dict[str, str]:
@@ -596,7 +603,9 @@ class Entry:
                 f"Invalid picker row: expected {len(FZF_ROW_FIELDS)} "
                 f"tab-separated fields, got {len(parts)}"
             )
-        return dict(zip(FZF_ROW_FIELDS, map(row_unescape, parts), strict=True))
+        fields = dict(zip(FZF_ROW_FIELDS, parts, strict=True))
+        # The display is stored as shown (see to_fzf_row); the rest unescape.
+        return {k: v if k == "display" else row_unescape(v) for k, v in fields.items()}
 
 
 @dataclass(frozen=True)
@@ -1515,14 +1524,15 @@ def agent_view_entries(
     for pane in shown:
         state = pane_state(pane)
         counts[state] = counts.get(state, 0) + 1
-        label = fit(clean_field(pane.get("label")), LAYOUT.name_width, keep="middle")
+        label = clean_field(pane.get("label"))
+        label = fit(row_escape(label), LAYOUT.name_width, keep="middle")
         cells = [f"{STATE_GLYPH[state]} {label}"]
         if stream_on:
-            cells.append(fit(agent_stream(pane), STREAM_WIDTH))
+            cells.append(fit(row_escape(agent_stream(pane)), STREAM_WIDTH))
         if host_on:
             host = clean_field(pane.get("host"))
             where = "here" if pane.get("local") else f"\u2192 {host}"
-            cells.append(fit(where, HOST_WIDTH))
+            cells.append(fit(row_escape(where), HOST_WIDTH))
         cells.append(age_text(pane.get("updated_at")))
         rows.append(agent_entry(pane, text=" ".join(cells).rstrip()))
     return rows, columns, counts
