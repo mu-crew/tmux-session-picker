@@ -1048,6 +1048,11 @@ if args[:3] == ["status", "--json", "--cached"]:
     sys.stdout.write(open(os.environ["FAKE_MURMUR_JSON"]).read())
     sys.exit(0)
 if args[:1] == ["jump"]:
+    if os.environ.get("FAKE_MURMUR_NOJUMP"):
+        sys.stderr.write("error: unknown command 'jump'\\n")
+        sys.exit(1)
+    if args[1:] == ["--help"]:
+        sys.exit(0)
     sys.exit(int(os.environ.get("FAKE_MURMUR_JUMP_RC", "0")))
 """
 
@@ -1180,6 +1185,17 @@ class MurmurRows(FakeMurmur):
     def test_agent_rows_are_not_in_the_sessions_view(self):
         self.install([agent_pane()])
         self.assertFalse([e for e in self.rows("sessions") if e.kind == "agent"])
+
+    def test_murmur_without_jump_offers_no_agent_rows(self):
+        self.install(
+            [agent_pane(pane="%1", render_state="blocked"), agent_pane(pane="%2")]
+        )
+        with unittest.mock.patch.dict(os.environ, {"FAKE_MURMUR_NOJUMP": "1"}):
+            entries = self.rows()
+        self.assertFalse([e for e in entries if e.kind == "agent"])
+        notes = next(e for e in entries if e.name == "notes")
+        self.assertEqual(sum(n for _, n in notes.agent_counts), 2)
+        self.assertFalse([c for c in self.calls() if c.startswith("jump j1:")])
 
     def test_invisible_agents_get_no_row(self):
         self.install([agent_pane(visible=False)])
@@ -1377,7 +1393,7 @@ class AgentEnter(FakeMurmur):
         ).stdout.strip()
         self.assertEqual(switched, [("notes", target)])
         self.assertEqual(active, target)
-        self.assertFalse(any(c.startswith("jump") for c in self.calls()))
+        self.assertFalse(any(c.startswith("jump j1:") for c in self.calls()))
 
 
 if __name__ == "__main__":

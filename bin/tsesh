@@ -780,6 +780,24 @@ def murmur_panes() -> list[dict] | None:
     return panes
 
 
+def murmur_can_jump(exe: str) -> bool:
+    """Whether this murmur has a ``jump`` command, by asking for its help.
+
+    Side-effect free (help never reads state) and probed by feature, not by
+    version: an unknown command exits non-zero.
+    """
+    try:
+        probe = subprocess.run(
+            [exe, "jump", "--help"],
+            capture_output=True,
+            timeout=float(os.environ.get("TSESH_MURMUR_TIMEOUT", "1")),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
 def conventional_tmux_dir() -> str | None:
     """Where tmux keeps its named sockets, as murmur derives it."""
     try:
@@ -846,6 +864,11 @@ def age_text(updated_ms: object, now_ms: float | None = None) -> str:
 ATTENTION_ROW_STATES = {"crashed", "error", "blocked", "done"}
 
 
+def _can_jump() -> bool:
+    exe = murmur_command()
+    return exe is not None and murmur_can_jump(exe)
+
+
 def agent_entries(
     panes: list[dict], live: Mapping[str, object]
 ) -> tuple[list[Entry], dict[str, dict[AgentState, int]]]:
@@ -856,6 +879,7 @@ def agent_entries(
     """
     counts: dict[str, dict[AgentState, int]] = {}
     rows: list[Entry] = []
+    offer_rows: bool | None = None  # probed lazily, once
     for pane in panes:
         state = AgentState.parse(str(pane.get("render_state", "")))
         is_here = bool(pane.get("local")) and is_own_server(pane.get("server"))
@@ -868,6 +892,10 @@ def agent_entries(
             and str(pane.get("render_state")) in ATTENTION_ROW_STATES
             and pane.get("visible")
         ):
+            if offer_rows is None:
+                offer_rows = _can_jump()
+            if not offer_rows:
+                continue
             where = f"{session}:{clean_field(pane.get('window_name'))}".strip(":")
             parts = [clean_field(pane.get("host")), where]
             parts.append(age_text(pane.get("updated_at")))
