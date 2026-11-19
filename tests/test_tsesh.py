@@ -282,6 +282,15 @@ class AttachUsesSocket(unittest.TestCase):
         self.assertIn("attach-session", argvs[0])
 
 
+class Tildify(unittest.TestCase):
+    def test_only_a_leading_home_component(self):
+        home = str(Path.home())
+        self.assertEqual(tsesh.tildify(home), "~")
+        self.assertEqual(tsesh.tildify(home + "/x"), "~/x")
+        self.assertEqual(tsesh.tildify(home + "2/x"), home + "2/x")
+        self.assertEqual(tsesh.tildify("/srv" + home + "/x"), "/srv" + home + "/x")
+
+
 class BuildEntries(unittest.TestCase):
     """The merge the picker is: which sessions appear, in what order."""
 

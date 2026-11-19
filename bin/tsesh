@@ -260,8 +260,7 @@ class Entry:
     def display_path(self) -> str:
         if not self.path:
             return ""
-        home = str(Path.home())
-        return self.path.replace(home, "~", 1)
+        return tildify(self.path)
 
     def visible_text(self) -> str:
         name = self.display_name.ljust(DISPLAY_NAME_WIDTH)
@@ -392,6 +391,16 @@ def exact_session_target(name: str) -> str:
 
 def exact_pane_target(name: str, pane: str) -> str:
     return f"={name}:{pane}"
+
+
+def tildify(path: str) -> str:
+    """Rewrite a leading home directory as ``~``; nothing else."""
+    home = str(Path.home()).rstrip("/")
+    if path == home:
+        return "~"
+    if home and path.startswith(home + "/"):
+        return "~" + path[len(home) :]
+    return path
 
 
 def expand(path: str) -> str:
@@ -819,7 +828,7 @@ def tmux_session_preview(name: str) -> int:
         state_marker = (" " + STATE_GLYPH[_ws]) if _ws else ""
         print(f"window: {active_window_index}{state_marker} {active_window_name}")
     if active_pane_index:
-        short_path = active_path.replace(str(Path.home()), "~", 1)
+        short_path = tildify(active_path)
         print(f"pane: {active_pane_index}  {active_command}  {short_path}")
     print()
 
