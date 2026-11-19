@@ -925,8 +925,10 @@ def _fzf_command(mode: str, query: str = "") -> list[str]:
 def run_fzf(
     mode: str, query: str, *, capture: bool
 ) -> subprocess.CompletedProcess[str]:
-    backend().ensure_server()
-    live = backend().live_sessions()
+    live = backend().snapshot()
+    if live is None:
+        backend().ensure_server()
+        live = backend().live_sessions()
     mode = effective_initial_mode(mode, live)
     entries = "\n".join(entry.to_fzf_row() for entry in build_entries(mode, live))
     return subprocess.run(
@@ -977,7 +979,13 @@ class TmuxBackend:
     """tmux sessions. A class so tests can stub one method at a time."""
 
     def live_sessions(self) -> dict[str, AgentState | None]:
-        """Live session -> strongest murmur state, in one list-sessions call."""
+        return self.snapshot() or {}
+
+    def snapshot(self) -> dict[str, AgentState | None] | None:
+        """Live session -> strongest murmur state in one list-sessions call.
+
+        None when no server runs, so a caller can start one and ask again.
+        """
         result = tmux_cmd(
             "list-sessions",
             "-F",
@@ -985,7 +993,7 @@ class TmuxBackend:
             check=False,
         )
         if result.returncode != 0:
-            return {}
+            return None
         live: dict[str, AgentState | None] = {}
         for line in result.stdout.splitlines():
             name, _, raw = line.partition("\t")

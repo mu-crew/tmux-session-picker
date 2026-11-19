@@ -672,13 +672,15 @@ class PickerStartsServer(unittest.TestCase):
         fake = FakeServer(restores={"work"}).patched(self)
         listed = []
 
-        def live_sessions(self):
-            listed.append(sorted(fake.sessions if fake.running else []))
+        def snapshot(self):
+            if not fake.running:
+                return None
+            listed.append(sorted(fake.sessions))
             return dict.fromkeys(listed[-1])
 
-        old = tsesh.TmuxBackend.live_sessions
-        tsesh.TmuxBackend.live_sessions = live_sessions
-        self.addCleanup(setattr, tsesh.TmuxBackend, "live_sessions", old)
+        old = tsesh.TmuxBackend.snapshot
+        tsesh.TmuxBackend.snapshot = snapshot
+        self.addCleanup(setattr, tsesh.TmuxBackend, "snapshot", old)
         old_load = tsesh.load_config
         tsesh.load_config = lambda: config()
         self.addCleanup(setattr, tsesh, "load_config", old_load)
@@ -695,6 +697,36 @@ class PickerStartsServer(unittest.TestCase):
         fake.running = True
         tsesh.TmuxBackend().ensure_server()
         self.assertEqual(fake.calls, [])
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class PickerListsOnce(unittest.TestCase):
+    def test_running_server_is_listed_once_before_fzf(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        sock = tmp / "s"
+        os.environ["TSESH_TMUX_SOCKET_PATH"] = str(sock)
+        self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_PATH", None)
+        tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
+        subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
+        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        calls = []
+        real = tsesh.tmux_cmd
+
+        def spy(*args, **kw):
+            calls.append(args)
+            return real(*args, **kw)
+
+        for owner, attr, value in (
+            (tsesh, "tmux_cmd", spy),
+            (tsesh, "load_config", lambda: config()),
+            (tsesh, "_fzf_command", lambda mode, query="": ["true"]),
+        ):
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
+        tsesh.fzf("sessions")
+        listings = [c for c in calls if c[0] == "list-sessions"]
+        self.assertEqual(len(listings), 1, calls)
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
