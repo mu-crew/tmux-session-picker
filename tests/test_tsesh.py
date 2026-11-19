@@ -125,6 +125,13 @@ class RowRendering(unittest.TestCase):
         self.assertNotIn(State.waiting, tsesh.ATTENTION_STATES)
 
 
+class Header(unittest.TestCase):
+    def test_legend_shows_every_picker_key(self):
+        legend = ANSI.sub("", tsesh.header_text().splitlines()[0])
+        for key in ("^a", "^s", "^f", "tab", "s-tab", "enter"):
+            self.assertIn(key, legend)
+
+
 class RowRoundTrip(unittest.TestCase):
     def test_payload_survives(self):
         entry = tsesh.Entry(

@@ -408,6 +408,8 @@ def header_text() -> str:
         ("^a all", CATPPUCCIN["subtext0"]),
         ("^s sessions", CATPPUCCIN["sky"]),
         ("^f find", CATPPUCCIN["subtext0"]),
+        ("tab/s-tab move", CATPPUCCIN["overlay0"]),
+        ("enter open", CATPPUCCIN["overlay0"]),
     ]
     legend = "  " + " ".join(ansi_style(label, fg=color) for label, color in items)
     columns = f"   {'session'.ljust(DISPLAY_NAME_WIDTH)} {'state'.ljust(7)}path"
