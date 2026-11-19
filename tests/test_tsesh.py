@@ -152,6 +152,29 @@ class Version(unittest.TestCase):
         self.assertIn("## [Unreleased]", log)
 
 
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class PopupBinding(unittest.TestCase):
+    def test_picker_key_passes_the_invoking_client(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        sock = tmp / "s"
+        tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
+        subprocess.run([*tmux, "new-session", "-d", "-s", "x"], check=True)
+        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        env = dict(os.environ, TMUX=f"{sock},1,0")
+        subprocess.run(
+            ["bash", str(TSESH.parent.parent / "tsesh.tmux")], env=env, check=True
+        )
+        keys = subprocess.run(
+            [*tmux, "list-keys", "-T", "prefix", "s"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertIn("#{client_name}", keys)
+        self.assertIn("--client", keys)
+
+
 class Docs(unittest.TestCase):
     def test_readme_documents_every_state(self):
         readme = (TSESH.parent.parent / "README.md").read_text(encoding="utf-8")
@@ -1442,13 +1465,13 @@ class AmbientServer(FakeMurmur):
 
 
 class AgentEnter(FakeMurmur):
-    def pick(self, entry):
+    def pick(self, entry, **kw):
         old = tsesh.run_fzf
         tsesh.run_fzf = lambda mode, query, *, capture: subprocess.CompletedProcess(
             [], 0, stdout=entry.to_fzf_row() + "\n"
         )
         self.addCleanup(setattr, tsesh, "run_fzf", old)
-        return tsesh.pick_and_connect()
+        return tsesh.pick_and_connect(**kw)
 
     def agent_entry(self, socket=None, **over):
         self.install([agent_pane(**over)])
@@ -1473,6 +1496,23 @@ class AgentEnter(FakeMurmur):
         entry = self.agent_entry(server={"kind": "label", "value": "private"})
         with unittest.mock.patch.dict(os.environ, {"FAKE_MURMUR_JUMP_RC": "1"}):
             self.assertEqual(self.pick(entry), 1)
+
+    def test_jump_failure_is_exit_1_and_names_the_invoking_client(self):
+        entry = self.agent_entry(server={"kind": "label", "value": "private"})
+        tmux_calls = []
+        env = {"FAKE_MURMUR_JUMP_RC": "42", "TMUX": "/nowhere/sock,1,0"}
+        with (
+            unittest.mock.patch.dict(os.environ, env),
+            unittest.mock.patch.object(
+                tsesh, "tmux_cmd", lambda *a, **k: tmux_calls.append(a)
+            ),
+            unittest.mock.patch.object(tsesh, "pause_for_error", lambda: None),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(self.pick(entry, client="/dev/pts/7"), 1)
+        shown = [c for c in tmux_calls if c[0] == "display-message"]
+        self.assertEqual(len(shown), 1, tmux_calls)
+        self.assertEqual(shown[0][1:3], ("-c", "/dev/pts/7"))
 
     def test_failed_jump_stays_visible_in_a_popup(self):
         entry = self.agent_entry(server={"kind": "label", "value": "private"})

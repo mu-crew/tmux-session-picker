@@ -1321,12 +1321,14 @@ def fzf(mode: str = "all", query: str = "") -> int:
     return run_fzf(mode, query, capture=False).returncode
 
 
-def pick_and_connect(mode: str = "all", query: str = "") -> int:
+def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> int:
     """Run the fzf picker and connect to the selection in one step.
 
     fzf writes its UI to /dev/tty when stdout is captured, so the picker
     still renders interactively while we keep the selection in-process.
     """
+    global INVOKING_CLIENT
+    INVOKING_CLIENT = resolve_client(client)
     proc = run_fzf(mode, query, capture=True)
     if proc.returncode != 0:
         return proc.returncode
@@ -1369,7 +1371,8 @@ def connect_agent(payload: EntryPayload) -> int:
     code = subprocess.run([exe, "jump", payload.jump_target], check=False).returncode
     if code != 0:
         report_failure(f"murmur jump {payload.jump_target} failed (exit {code})")
-    return code
+        return 1
+    return 0
 
 
 def update_last(name: str) -> None:
@@ -1655,12 +1658,30 @@ def last() -> int:
 MODES = ["all", "sessions", "find"]
 
 
+# The tmux client the picker was opened from; failures are shown on it, not on
+# whichever client tmux considers current.
+INVOKING_CLIENT: str | None = None
+
+
+def resolve_client(given: str = "") -> str | None:
+    """The invoking client: the one the key binding named, else (in tmux) the
+    one tmux reports now. Resolved once, before any picker interaction."""
+    if given and re.fullmatch(r"[A-Za-z0-9_./:@-]+", given):
+        return given
+    if not os.environ.get("TMUX"):
+        return None
+    result = tmux_bytes("display-message", "-p", "#{client_name}")
+    name = os.fsdecode(result.stdout).strip() if result.returncode == 0 else ""
+    return name or None
+
+
 def report_failure(message: str) -> None:
     """Make a failure readable after a popup closes: stderr, a tmux message on
     the invoking client when in tmux, and a short pause on a tty."""
     print(message, file=sys.stderr)
     if os.environ.get("TMUX"):
-        tmux_cmd("display-message", "-d", "5000", message, check=False)
+        target = ["-c", INVOKING_CLIENT] if INVOKING_CLIENT else []
+        tmux_cmd("display-message", *target, "-d", "5000", message, check=False)
     pause_for_error()
 
 
@@ -1698,6 +1719,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             default="all",
         )
         p_pick_connect.add_argument("--query", default="")
+        p_pick_connect.add_argument(
+            "--client", default="", help="tmux client the picker was opened from"
+        )
 
         p_connect = sub.add_parser("connect")
         p_connect.add_argument("target", nargs="?", default="")
@@ -1725,7 +1749,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.cmd == "picker":
             return fzf(args.mode, query=args.query)
         if args.cmd == "pick-and-connect":
-            return pick_and_connect(args.mode, query=args.query)
+            return pick_and_connect(args.mode, query=args.query, client=args.client)
         if args.cmd == "connect":
             target = backend().current_cwd(args.pane) if args.pane else args.target
             if not target:

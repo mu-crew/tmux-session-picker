@@ -24,8 +24,12 @@ pick=$(opt @tsesh_key_pick s)
 last=$(opt @tsesh_key_last g)
 root=$(opt @tsesh_key_root T)
 
+# run-shell expands #{client_name} (display-popup's own command is not
+# expanded), so the picker learns which client opened it and failures show
+# there, not on whichever client tmux calls current. A client name is a tty
+# path or "client-N": nothing a shell would split.
 [[ -n $pick ]] && tmux bind-key -N "session picker (tsesh)" "$pick" \
-	display-popup -E -w 90% -h 85% "'$tsesh' pick-and-connect"
+	run-shell -b "tmux display-popup -E -c '#{client_name}' -w 90% -h 85% \"'$tsesh' pick-and-connect --client '#{client_name}'\""
 [[ -n $last ]] && tmux bind-key -N "last session (tsesh)" "$last" \
 	run-shell -b "'$tsesh' last"
 # #{pane_id} only: run-shell hands the expanded line to sh -c, and a path
