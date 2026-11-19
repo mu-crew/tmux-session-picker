@@ -727,3 +727,71 @@ class FailureOnTheInvokingServer(Harness):
                 here = self.tmux("show-messages")
                 self.assertIn(f"murmur jump {target} failed", here)
                 self.assertNotIn(target, self.tmux("show-messages", sock=other))
+
+
+@unittest.skipUnless(shutil.which("fzf"), "needs fzf")
+class PluginPathQuoting(Harness):
+    """tsesh.tmux sourced from a directory whose name a shell would split."""
+
+    def source_from(self, name):
+        link = self.tmp / name
+        link.symlink_to(ROOT)
+        for key in (
+            "TSESH_MURMUR",
+            "FAKE_MURMUR_LOG",
+            "FAKE_MURMUR_JSON",
+            "TSESH_CONFIG",
+            "XDG_STATE_HOME",
+            "_ZO_DATA_DIR",
+        ):
+            self.tmux("set-environment", "-g", key, self.env[key])
+        subprocess.run(
+            ["bash", str(link / "tsesh.tmux")],
+            env={**os.environ, "TMUX": f"{self.sock},1,0"},
+            check=True,
+        )
+
+    def host_screen(self, host):
+        return self.tmux("capture-pane", "-p", "-t", "h:", sock=host)
+
+    def test_keys_work_from_a_path_with_quote_space_and_hash(self):
+        for name in ("Plugin path", "Plugin's path", "Plugin's #{path} $HOME"):
+            with self.subTest(name=name):
+                self.source_from(name)
+                self.snapshot([self.own(label=f"agent-{len(name)}")])
+                host = self.tmp / "host-notes"
+                self.tmux("kill-server", sock=host)
+                client = self.attach("notes")
+                self.tmux("send-keys", "-t", "h:", "C-b", "a", sock=host)
+                for _ in range(50):
+                    if f"agent-{len(name)}" in self.host_screen(host):
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail(f"no agents popup:\n{self.host_screen(host)}")
+                self.tmux("send-keys", "-t", "h:", "Escape", sock=host)
+                for _ in range(50):
+                    if f"agent-{len(name)}" not in self.host_screen(host):
+                        break
+                    time.sleep(0.1)
+                # prefix T: `connect --pane` makes a session at the pane's cwd.
+                cwd = self.tmp / f"cwd{len(name)}"
+                cwd.mkdir()
+                self.tmux("send-keys", "-t", "notes:", f"cd {cwd}", "Enter")
+                time.sleep(0.5)
+                self.tmux("send-keys", "-t", "h:", "C-b", "T", sock=host)
+                for _ in range(50):
+                    if f"cwd{len(name)}" in self.tmux("list-sessions"):
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail(
+                        "prefix T made no session: "
+                        + self.tmux("list-sessions")
+                        + self.tmux(
+                            "display", "-p", "-t", client, "#{pane_current_path}"
+                        )
+                        + self.tmux("show-messages")
+                    )
+                self.tmux("switch-client", "-c", client, "-t", "notes")
+                self.tmux("kill-server", sock=host)

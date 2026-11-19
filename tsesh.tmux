@@ -42,17 +42,33 @@ tsesh_bind() {
 	fi
 }
 
-# run-shell expands #{client_name} (display-popup's own command is not
-# expanded), so the picker learns which client opened it and failures show
-# there, not on whichever client tmux calls current. A client name is a tty
-# path or "client-N": nothing a shell would split.
+# quote WORD: WORD for sh, in single quotes; a ' inside is closed, escaped
+# and reopened.
+quote() {
+	local q="'\\''"
+	printf "'%s'" "${1//\'/$q}"
+}
+
+# Each binding's line passes through two parsers. run-shell format-expands it
+# (so a literal "#" is written "##") and hands it to sh -c; display-popup hands
+# its own argument to a shell again. The plugin path is quoted for each layer,
+# so a directory like "Plugin's path" works. run-shell expands #{client_name}
+# (display-popup's own command is not expanded), so the picker learns which
+# client opened it and failures show there, not on whichever client tmux calls
+# current. A client name is a tty path or "client-N": nothing a shell would
+# split. #{pane_id} likewise: run-shell hands the expanded line to sh -c, and
+# a path can carry a newline, so tsesh reads the cwd for the pane id itself.
+exe=$(quote "$tsesh")
+exe=${exe//#/##}
+popup() {
+	local inner="$exe pick-and-connect $1--client '#{client_name}'"
+	printf '%s' "tmux display-popup -E -c '#{client_name}' -w 90% -h 85% $(quote "$inner")"
+}
 tsesh_bind pick "$(opt @tsesh_key_pick s)" "session picker (tsesh)" \
-	run-shell -b "tmux display-popup -E -c '#{client_name}' -w 90% -h 85% \"'$tsesh' pick-and-connect --client '#{client_name}'\""
+	run-shell -b "$(popup "")"
 tsesh_bind agents "$(opt @tsesh_key_agents a)" "agent picker (tsesh)" \
-	run-shell -b "tmux display-popup -E -c '#{client_name}' -w 90% -h 85% \"'$tsesh' pick-and-connect --mode agents --client '#{client_name}'\""
+	run-shell -b "$(popup "--mode agents ")"
 tsesh_bind last "$(opt @tsesh_key_last g)" "last session (tsesh)" \
-	run-shell -b "'$tsesh' last"
-# #{pane_id} only: run-shell hands the expanded line to sh -c, and a path
-# can carry a newline. tsesh reads the cwd for the pane id itself.
+	run-shell -b "$exe last"
 tsesh_bind root "$(opt @tsesh_key_root T)" "session at pane cwd (tsesh)" \
-	run-shell -b "'$tsesh' connect --pane '#{pane_id}'"
+	run-shell -b "$exe connect --pane '#{pane_id}'"
