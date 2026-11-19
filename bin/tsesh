@@ -16,6 +16,9 @@ from functools import cache
 from pathlib import Path
 from shlex import quote as sh_quote
 
+# Bumped by hand at release time; see RELEASING.md.
+VERSION = "1.0.0-dev"
+
 
 class AgentState(enum.IntEnum):
     """Agent states as murmur publishes them, ordered by urgency.
@@ -1280,6 +1283,7 @@ def pause_for_error() -> None:
 def main(argv: Iterable[str] | None = None) -> int:
     try:
         parser = argparse.ArgumentParser()
+        parser.add_argument("--version", action="version", version=f"tsesh {VERSION}")
         sub = parser.add_subparsers(dest="cmd", required=True)
 
         p_list = sub.add_parser("list")

@@ -132,6 +132,19 @@ class Header(unittest.TestCase):
             self.assertIn(key, legend)
 
 
+class Version(unittest.TestCase):
+    def test_version_flag_prints_the_constant(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            tsesh.main(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(out.getvalue().strip(), f"tsesh {tsesh.VERSION}")
+
+    def test_changelog_has_the_current_version_or_unreleased(self):
+        log = (TSESH.parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("## [Unreleased]", log)
+
+
 class Docs(unittest.TestCase):
     def test_readme_documents_every_state(self):
         readme = (TSESH.parent.parent / "README.md").read_text(encoding="utf-8")

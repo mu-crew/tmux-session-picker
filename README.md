@@ -58,6 +58,12 @@ Inside the picker:
 
 `tsesh list|picker|pick-and-connect --mode` takes `all`, `sessions` or `find`.
 
+## Versions
+
+`tsesh --version` prints the version. Releases are git tags; pin one with
+`set -g @plugin 'mu-crew/tmux-session-picker#vX.Y.Z'`. See
+[CHANGELOG.md](CHANGELOG.md) and [RELEASING.md](RELEASING.md).
+
 ## Config
 
 Optional. Without a config file tsesh lists live sessions, zoxide and the scan
