@@ -1234,7 +1234,11 @@ def connect_agent(payload: EntryPayload) -> int:
     if exe is None or not payload.jump_target:
         print("agent: murmur is needed to reach this agent", file=sys.stderr)
         return 1
-    return subprocess.run([exe, "jump", payload.jump_target], check=False).returncode
+    # stdio stays inherited: jump may need the tty (ssh, a hardware-key tap).
+    code = subprocess.run([exe, "jump", payload.jump_target], check=False).returncode
+    if code != 0:
+        report_failure(f"murmur jump {payload.jump_target} failed (exit {code})")
+    return code
 
 
 def update_last(name: str) -> None:
@@ -1520,6 +1524,15 @@ def last() -> int:
 MODES = ["all", "sessions", "find"]
 
 
+def report_failure(message: str) -> None:
+    """Make a failure readable after a popup closes: stderr, a tmux message on
+    the invoking client when in tmux, and a short pause on a tty."""
+    print(message, file=sys.stderr)
+    if os.environ.get("TMUX"):
+        tmux_cmd("display-message", "-d", "5000", message, check=False)
+    pause_for_error()
+
+
 def pause_for_error() -> None:
     """display-popup -E closes on exit; leave the message readable."""
     if sys.stderr.isatty():
@@ -1606,8 +1619,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 1
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip()
-        print(detail or f"tmux failed: {exc}", file=sys.stderr)
-        pause_for_error()
+        report_failure(detail or f"tmux failed: {exc}")
         return 1
 
 

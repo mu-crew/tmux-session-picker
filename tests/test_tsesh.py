@@ -1317,6 +1317,31 @@ class AgentEnter(FakeMurmur):
         with unittest.mock.patch.dict(os.environ, {"FAKE_MURMUR_JUMP_RC": "1"}):
             self.assertEqual(self.pick(entry), 1)
 
+    def test_failed_jump_stays_visible_in_a_popup(self):
+        entry = self.agent_entry(server={"kind": "label", "value": "private"})
+        paused, tmux_calls = [], []
+        real = tsesh.tmux_cmd
+
+        def spy(*args, **kw):
+            tmux_calls.append(args)
+            return real(*args, **kw) if args[0] != "display-message" else None
+
+        env = {"FAKE_MURMUR_JUMP_RC": "1", "TMUX": "/nowhere/sock,1,0"}
+        with (
+            unittest.mock.patch.dict(os.environ, env),
+            unittest.mock.patch.object(tsesh, "tmux_cmd", spy),
+            unittest.mock.patch.object(
+                tsesh, "pause_for_error", lambda: paused.append(1)
+            ),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            self.assertEqual(self.pick(entry), 1)
+        shown = [c for c in tmux_calls if c[0] == "display-message"]
+        self.assertEqual(len(shown), 1, tmux_calls)
+        self.assertIn("j1:abc", " ".join(shown[0]))
+        self.assertIn("jump", err.getvalue())
+        self.assertEqual(paused, [1])
+
     @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
     def test_local_agent_selects_its_pane_then_switches(self):
         tmp = Path(tempfile.mkdtemp())
