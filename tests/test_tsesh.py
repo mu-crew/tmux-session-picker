@@ -332,6 +332,18 @@ class FindPrunesBlacklist(unittest.TestCase):
             found = tsesh.find_paths(cfg)
         self.assertEqual(found, [str(home / "proj")])
 
+    def test_blacklist_entry_is_literal_not_a_glob(self):
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        for name in ("dev1", "dev[0-9]", "normal"):
+            (home / name).mkdir()
+        with (
+            mock_env({"HOME": str(home)}),
+            unittest.mock.patch.object(tsesh.shutil, "which", return_value=None),
+        ):
+            found = tsesh.find_paths(config(blacklist=frozenset({"dev[0-9]"})))
+        self.assertEqual(sorted(found), [str(home / "dev1"), str(home / "normal")])
+
 
 class BuildEntries(unittest.TestCase):
     """The merge the picker is: which sessions appear, in what order."""
