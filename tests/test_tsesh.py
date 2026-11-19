@@ -419,6 +419,48 @@ class CreateWithDefaultBaseIndex(unittest.TestCase):
         self.assertEqual(len(panes.stdout.split()), 2)
 
 
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class NameCollision(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.sock = self.tmp / "s"
+        os.environ["TSESH_TMUX_SOCKET_PATH"] = str(self.sock)
+        self.addCleanup(os.environ.pop, "TSESH_TMUX_SOCKET_PATH", None)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(self._kill)
+        self.run_tmux("new-session", "-d", "-s", "keep")
+        for attr, value in (
+            ("start_server_in_own_scope", lambda args: False),
+            ("switch_or_attach", lambda name: None),
+        ):
+            self.addCleanup(setattr, tsesh, attr, getattr(tsesh, attr))
+            setattr(tsesh, attr, value)
+
+    def run_tmux(self, *args):
+        return subprocess.run(
+            ["tmux", "-f", "/dev/null", "-S", str(self.sock), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def _kill(self):
+        self.run_tmux("kill-server")
+
+    def test_distinct_dirs_with_one_sanitized_name_get_distinct_sessions(self):
+        a, b = self.tmp / "a.b", self.tmp / "a_b"
+        a.mkdir()
+        b.mkdir()
+        tsesh.connect(str(a))
+        tsesh.connect(str(b))
+        paths = self.run_tmux("list-sessions", "-F", "#{session_path}").stdout.split()
+        self.assertIn(str(a), paths)
+        self.assertIn(str(b), paths)
+        tsesh.connect(str(a))  # same dir again reuses its session
+        names = self.run_tmux("list-sessions", "-F", "#{session_name}").stdout.split()
+        self.assertEqual(len(names), 3, names)
+
+
 class FakeServer:
     """A tmux server that may "restore" sessions when started.
 

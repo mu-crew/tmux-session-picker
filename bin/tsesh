@@ -1138,6 +1138,34 @@ def pane_cwd(pane_id: str) -> str:
     return result.stdout.removesuffix("\n")
 
 
+def tmux_session_path(name: str) -> str:
+    result = tmux_cmd(
+        "list-sessions", "-F", "#{session_name}\t#{session_path}", check=False
+    )
+    for line in result.stdout.splitlines():
+        session, _, path = line.partition("\t")
+        if session == name:
+            return path
+    return ""
+
+
+def free_name_for_path(name: str, path: str) -> str:
+    """NAME, or NAME-2, NAME-3... when NAME is a live session for another dir.
+
+    Sanitizing maps distinct paths (``a.b`` and ``a_b``) to one name; without
+    this, connecting to the second would switch to the first's session.
+    """
+    wanted = Path(path).expanduser().resolve()
+    candidate, n = name, 1
+    while tmux_session_exists(candidate):
+        existing = tmux_session_path(candidate)
+        if existing and Path(existing).resolve() == wanted:
+            return candidate
+        n += 1
+        candidate = f"{name}-{n}"
+    return candidate
+
+
 def connect(target: str) -> int:
     target = expand(target)
     sessions_by_name = {session.name: session for session in load_config().sessions}
@@ -1161,7 +1189,7 @@ def connect(target: str) -> int:
     # session name (attach if it exists, error otherwise — connect_resolved
     # handles both via its `path is None` branch).
     path = target if Path(target).exists() else None
-    name = session_name_for_path(target) if path else target
+    name = free_name_for_path(session_name_for_path(target), path) if path else target
     return connect_resolved(name, path, None, DEFAULT_SPLIT)
 
 
