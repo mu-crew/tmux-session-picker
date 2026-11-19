@@ -259,6 +259,23 @@ FZF_ROW_FIELDS: tuple[str, ...] = (
 )
 
 
+def state_cell(counts: tuple[tuple[AgentState, int], ...]) -> str:
+    """Per-state agent counts, strongest first, within STATE_WIDTH.
+
+    No state vanishes silently: groups that do not fit collapse into "+N", the
+    number of agents they hold. A count above 99 reads "99+".
+    """
+    groups = [f"{STATE_GLYPH[st]}{n if n <= 99 else '99+'}" for st, n in counts]
+    if len(" ".join(groups)) <= STATE_WIDTH:
+        return " ".join(groups)
+    for keep in range(len(groups) - 1, -1, -1):
+        rest = sum(n for _, n in counts[keep:])
+        cell = " ".join([*groups[:keep], f"+{rest}"])
+        if len(cell) <= STATE_WIDTH:
+            return cell
+    return f"+{sum(n for _, n in counts)}"
+
+
 @dataclass(frozen=True)
 class Entry:
     kind: str
@@ -297,10 +314,7 @@ class Entry:
         name = self.display_name.ljust(DISPLAY_NAME_WIDTH)
         ws = self.worst_state
         if self.agent_counts:
-            cell = " ".join(
-                f"{STATE_GLYPH[state]}{min(n, 99)}"
-                for state, n in self.agent_counts[:3]
-            )
+            cell = state_cell(self.agent_counts)
         else:
             cell = STATE_GLYPH[ws] if ws else " "
         text = f"{self.icon}  {name} {cell}"

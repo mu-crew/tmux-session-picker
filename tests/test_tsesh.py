@@ -1279,6 +1279,30 @@ class MurmurRows(FakeMurmur):
         self.assertIn(f"{tsesh.STATE_GLYPH[State.done]}1", text)
         self.assertNotIn("idle", text)
 
+    def test_no_state_is_silently_dropped(self):
+        states = ["crashed", "error", "blocked", "done", "working"]
+        self.install(
+            [agent_pane(pane=f"%{i}", render_state=st) for i, st in enumerate(states)]
+        )
+        notes = next(e for e in self.rows() if e.name == "notes")
+        self.assertEqual(sum(n for _, n in notes.agent_counts), 5)
+        text = ANSI.sub("", notes.visible_text())
+        self.assertIn(f"{tsesh.STATE_GLYPH[State.crashed]}1", text)
+        self.assertIn("+2", text)  # the two weakest groups, counted not hidden
+        self.assertNotIn(tsesh.STATE_GLYPH[State.working], text)
+
+    def test_counts_over_99_say_so(self):
+        entry = tsesh.Entry(
+            kind="tmux",
+            name="big",
+            session_name="big",
+            worst_state=State.working,
+            agent_counts=((State.working, 140), (State.done, 3)),
+        )
+        text = ANSI.sub("", entry.visible_text())
+        self.assertIn(f"{tsesh.STATE_GLYPH[State.working]}99+", text)
+        self.assertIn(f"{tsesh.STATE_GLYPH[State.done]}3", text)
+
     def test_other_servers_do_not_count_toward_sessions(self):
         self.install([agent_pane(server={"kind": "label", "value": "private"})])
         notes = next(e for e in self.rows() if e.name == "notes")
