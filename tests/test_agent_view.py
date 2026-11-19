@@ -949,6 +949,19 @@ class WindowPaths(unittest.TestCase):
         self.assertIn(" 2w 2p ", rows[("tmux", "flat")])
         self.assertNotRegex(rows[("default", "pin")], r"\dw \d+p")
 
+    def test_live_rows_sort_by_last_activity(self):
+        def latest():
+            out = self.on_tmux("list-sessions", "-F", "#{session_activity}")
+            return max(int(n) for n in out.split())
+
+        # A later second than any session's activity, then a new session.
+        newest = latest()
+        self.assertTrue(support.wait_until(lambda: int(time.time()) > newest))
+        self.on_tmux("new-session", "-d", "-s", "zzz-newest", "sleep 600")
+        live = [name for kind, name in self.rows("sessions") if kind == "tmux"]
+        self.assertEqual(live[0], "zzz-newest")
+        self.assertEqual(sorted(live[1:]), ["flat", "proj"])
+
     def test_zoxide_dirs_of_a_live_session_are_dropped(self):
         zoxide = [name for kind, name in self.rows() if kind == "zoxide"]
         self.assertEqual(zoxide, ["zox"])

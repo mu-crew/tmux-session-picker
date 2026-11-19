@@ -172,7 +172,8 @@ popup lays the list out again.
 
 ## Session names and directories
 
-A live session's row counts its windows and panes (`3w 5p`) and shows its
+Live sessions are listed most recently active first, after the pinned ones
+(which keep their config order). A live session's row counts its windows and panes (`3w 5p`) and shows its
 active pane's directory, with a dim `+N` when its windows sit in N other
 directories. A zoxide or scan directory that a live
 session is rooted at, or has a window in, is not listed again: that session's

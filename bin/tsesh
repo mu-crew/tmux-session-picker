@@ -1682,7 +1682,11 @@ def build_view(
 
     if mode in {"all", "sessions"}:
         configured_names = {session.name for session in configured_sessions}
-        for session_name in sorted(live_names):
+        # Most recently active first; pinned sessions keep the config order.
+        activity = getattr(live, "activity", {})
+        for session_name in sorted(
+            live_names, key=lambda name: (-activity.get(name, 0), name)
+        ):
             if session_name in configured_names:
                 continue
             entries.append(
@@ -2161,6 +2165,7 @@ class LiveSessions(dict[str, AgentState | None]):
         super().__init__()
         self.ids: dict[str, str] = {}  # name -> tmux session id ($N)
         self.paths: dict[str, str] = {}  # name -> #{session_path}
+        self.activity: dict[str, int] = {}  # name -> #{session_activity}
         # name -> (active, panes, cwd of the active pane), one per window
         self.windows: dict[str, list[tuple[bool, int, str]]] = {}
 
@@ -2205,7 +2210,8 @@ class TmuxBackend:
             "list-sessions",
             "-F",
             "#{session_attached}\t#{session_id}\t#{@murmur_session_state}"
-            "\t#{session_name}\n#{session_id}\tP\t#{session_path}",
+            "\t#{session_activity}\t#{session_name}"
+            "\n#{session_id}\tP\t#{session_path}",
             check=False,
         )
         if result.returncode != 0:
@@ -2218,10 +2224,12 @@ class TmuxBackend:
             if m := re.fullmatch(r"(\$[0-9]+)\tP\t(.*)", line):
                 paths[m[1]] = m[2]
                 continue
-            clients, sid, raw, name = [*line.split("\t", 3), "", "", ""][:4]
+            fields = [*line.split("\t", 4), "", "", "", ""]
+            clients, sid, raw, activity, name = fields[:5]
             if name.strip() and re.fullmatch(r"\$[0-9]+", sid):
                 live[name] = AgentState.parse(raw)
                 live.ids[name] = sid
+                live.activity[name] = int(activity) if activity.isdigit() else 0
                 names[sid] = name
                 if clients not in {"", "0"}:
                     attached.add(name)

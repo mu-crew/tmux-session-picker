@@ -61,6 +61,9 @@ versions follow [SemVer](https://semver.org/).
   wraps, and a new layout on resize. Widths count terminal cells (CJK names
   stay aligned). Needs fzf 0.46+.
 
+- Live sessions sort by last activity, newest first; pinned sessions keep
+  their config order.
+
 ### Fixed
 
 - Picker rows escape backslashes, tabs and line breaks in every field, so a

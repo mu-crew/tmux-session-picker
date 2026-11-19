@@ -656,6 +656,15 @@ class BuildEntries(unittest.TestCase):
             ("yazi", "/tmp/dotfiles"),
         )
 
+    def test_live_sessions_sort_by_activity_pins_keep_config_order(self):
+        live = tsesh.LiveSessions()
+        for name, when in (("zed", 300), ("notes", 100), ("alpha", 200)):
+            live[name] = None
+            live.activity[name] = when
+        names = [e.name for e in tsesh.build_entries("sessions", live)]
+        # pinned (config order) first, then live by last activity, newest first
+        self.assertEqual(names, ["dotfiles", "notes", "zed", "alpha"])
+
     def test_sessions_mode_is_pinned_then_live(self):
         self.assertEqual(
             [e.name for e in tsesh.build_entries("sessions")],
