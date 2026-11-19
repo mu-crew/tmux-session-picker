@@ -521,6 +521,13 @@ class NameCollision(unittest.TestCase):
         tsesh.connect(str(b))
         self.assertEqual(self.session_paths().count(str(b)), 1, self.sessions())
 
+    def test_path_with_newline_reuses_its_session(self):
+        d = self.tmp / "double\nline"
+        d.mkdir()
+        tsesh.connect(str(d))
+        tsesh.connect(str(d))
+        self.assertEqual(self.session_paths().count(str(d)), 1, self.sessions())
+
 
 class FakeServer:
     """A tmux server that may "restore" sessions when started.
