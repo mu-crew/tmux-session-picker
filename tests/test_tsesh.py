@@ -20,6 +20,8 @@ from pathlib import Path
 from shlex import quote as shlex_quote
 from urllib.request import Request
 
+import support
+
 ROOT = Path(__file__).resolve().parents[1]
 TSESH = ROOT / "bin" / "tsesh"
 
@@ -578,18 +580,16 @@ class LiveTmux(unittest.TestCase):
                 os.close(fd)
 
         self.addCleanup(reap)
-        client = ""
-        for _ in range(100):
-            out = subprocess.run(
+
+        def first_client():
+            return subprocess.run(
                 ["tmux", "-L", self.socket, "list-clients", "-F", "#{client_name}"],
                 check=False,
                 capture_output=True,
                 text=True,
-            ).stdout.split()
-            if out:
-                client = out[0]
-                break
-            time.sleep(0.05)
+            ).stdout.split()[:1]
+
+        client = (support.wait_until(first_client) or [""])[0]
         self.assertTrue(client)
         with unittest.mock.patch.object(tsesh, "load_config", config):
             busy, quiet = self.session_id("busy"), self.session_id("quiet")
@@ -773,7 +773,7 @@ class KillInPopup(unittest.TestCase):
             check=False,
         ).stdout
 
-    def wait(self, probe, timeout=10.0):
+    def wait(self, probe, timeout=support.WAIT):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with contextlib.suppress(OSError, ValueError):
@@ -1063,10 +1063,11 @@ class NameCollision(unittest.TestCase):
         tsesh.connect(str(link))
         self.assertIn(str(literal), self.session_paths())
         ids = self.tmux_bytes("list-sessions", "-F", "#{session_id}").split()
+
         # tmux reports an empty pane_current_path until the pane's process
         # has started; poll instead of reading it once.
-        for _ in range(100):
-            cwds = [
+        def cwds():
+            return [
                 os.fsdecode(
                     self.tmux_bytes(
                         "display-message", "-p", "-t", i, "#{pane_current_path}"
@@ -1074,10 +1075,9 @@ class NameCollision(unittest.TestCase):
                 ).removesuffix("\n")
                 for i in ids
             ]
-            if str(literal) in cwds:
-                break
-            time.sleep(0.05)
-        self.assertIn(str(literal), cwds)
+
+        support.wait_until(lambda: str(literal) in cwds())
+        self.assertIn(str(literal), cwds())
 
     def test_session_named_like_an_id_does_not_alias_the_matched_id(self):
         home = self.tmp / "home"
@@ -1470,13 +1470,9 @@ class FakeMurmur(unittest.TestCase):
         return self.log.read_text().splitlines()
 
     def wait_for_call(self, prefix):
-        import time
-
-        for _ in range(300):
-            if any(c.startswith(prefix) for c in self.calls()):
-                return True
-            time.sleep(0.05)
-        return False
+        return bool(
+            support.wait_until(lambda: any(c.startswith(prefix) for c in self.calls()))
+        )
 
 
 class MurmurProbe(FakeMurmur):
@@ -1827,16 +1823,19 @@ class StaleSocketAlias(FakeMurmur):
                 check=True,
             )
             self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
-            for _ in range(300):  # until the pane has printed its marker
-                shown = subprocess.run(
-                    [*tmux, "capture-pane", "-p", "-t", f"srv{name}"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                ).stdout
-                if f"SERVER_{name}" in shown:
-                    break
-                time.sleep(0.1)
+
+            def shown(tmux=tmux, name=name):  # until the pane prints its marker
+                return (
+                    f"SERVER_{name}"
+                    in subprocess.run(
+                        [*tmux, "capture-pane", "-p", "-t", f"srv{name}"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    ).stdout
+                )
+
+            self.assertTrue(support.wait_until(shown))
         self.alias = self.tmp / "alias"
         self.alias.symlink_to(self.dirs["A"])
         cfg = config()
@@ -1912,9 +1911,9 @@ class AmbientServer(FakeMurmur):
         self.addCleanup(shutil.rmtree, tmp, True)
         sock = tmp / "s"
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
+        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
         subprocess.run([*tmux, "new-session", "-d", "-s", "origin"], check=True)
         subprocess.run([*tmux, "new-session", "-d", "-s", "notes"], check=True)
-        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
         pane = subprocess.run(
             [*tmux, "list-panes", "-t", "notes", "-F", "#{pane_id}"],
             capture_output=True,
@@ -2050,10 +2049,10 @@ class AgentEnter(FakeMurmur):
         self.addCleanup(shutil.rmtree, tmp, True)
         sock = tmp / "s"
         tmux = ["tmux", "-f", "/dev/null", "-S", str(sock)]
+        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
         subprocess.run([*tmux, "new-session", "-d", "-s", "notes"], check=True)
         subprocess.run([*tmux, "new-window", "-t", "notes:", "-n", "two"], check=True)
         subprocess.run([*tmux, "split-window", "-t", "notes:two"], check=True)
-        self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
         panes = subprocess.run(
             [*tmux, "list-panes", "-t", "notes:two", "-F", "#{pane_id}"],
             capture_output=True,

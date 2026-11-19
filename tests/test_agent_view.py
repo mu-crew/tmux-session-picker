@@ -15,6 +15,7 @@ import time
 import unittest
 from pathlib import Path
 
+import support
 from test_tsesh import FAKE_MURMUR, TSESH, agent_pane, tsesh
 
 ROOT = TSESH.parent.parent
@@ -63,6 +64,7 @@ class Harness(unittest.TestCase):
             "FAKE_MURMUR_LOG": str(self.tmp / "murmur.log"),
             "FAKE_MURMUR_JSON": str(self.tmp / "status.json"),
             "FZF_SHIM_LOG": str(self.tmp / "fzf.log"),
+            "TSESH_MURMUR_TIMEOUT": os.environ["TSESH_MURMUR_TIMEOUT"],
         }
         self.snapshot([])
 
@@ -96,7 +98,7 @@ class Harness(unittest.TestCase):
             env=full,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=300,  # a bound for a hung run, not a pass condition
             check=False,
         )
 
@@ -113,10 +115,10 @@ class Harness(unittest.TestCase):
         )
         self.addCleanup(self.tmux, "kill-server", sock=host)
         tty = self.tmux("list-panes", "-F", "#{pane_tty}", sock=host).strip()
-        for _ in range(300):
-            if tty in self.tmux("list-clients", "-F", "#{client_name}"):
-                return tty
-            time.sleep(0.1)
+        if support.wait_until(
+            lambda: tty in self.tmux("list-clients", "-F", "#{client_name}")
+        ):
+            return tty
         self.fail("client did not attach")
 
     def in_tmux(self):
@@ -579,9 +581,8 @@ class RealFzf(Harness):
         return self.tmux("capture-pane", "-p", "-t", "notes:picker")
 
     def wait_for(self, text):
-        for _ in range(300):
-            if text in (screen := self.screen(0.1)):
-                return screen
+        if screen := support.wait_until(lambda: text in (s := self.screen()) and s):
+            return screen
         self.fail(f"{text!r} never appeared:\n{self.screen()}")
 
     def test_enter_on_the_empty_view_keeps_it_open(self):
@@ -652,11 +653,10 @@ class NamedSocketAlias(Harness):
                 check=True,
             )
             self.addCleanup(self.tmux, "kill-server", sock=sock)
-            for _ in range(300):  # until the pane has printed it
-                if text in self.tmux("capture-pane", "-p", "-t", "srv", sock=sock):
-                    return
-                time.sleep(0.1)
-            self.fail(f"{text} never shown")
+            shown = support.wait_until(  # until the pane has printed it
+                lambda: text in self.tmux("capture-pane", "-p", "-t", "srv", sock=sock)
+            )
+            self.assertTrue(shown, f"{text} never shown")
 
         sockdir.mkdir(mode=0o700)
         physical_a, physical_b = self.tmp / "a-sock", self.tmp / "b-sock"
@@ -758,12 +758,12 @@ class PluginPathQuoting(Harness):
     def wait_for_cwd(self, target, path):
         """Until the pane's shell has run the cd: shell startup time varies."""
         want = os.path.realpath(path)
-        for _ in range(300):
-            now = self.tmux("display", "-p", "-t", target, "#{pane_current_path}")
-            if os.path.realpath(now.strip()) == want:
-                return
-            time.sleep(0.1)
-        self.fail(f"pane never reached {want}: {now!r}")
+
+        def now():
+            return self.tmux("display", "-p", "-t", target, "#{pane_current_path}")
+
+        if not support.wait_until(lambda: os.path.realpath(now().strip()) == want):
+            self.fail(f"pane never reached {want}: {now()!r}")
 
     def host_screen(self, host):
         return self.tmux("capture-pane", "-p", "-t", "h:", sock=host)
@@ -777,28 +777,23 @@ class PluginPathQuoting(Harness):
                 self.tmux("kill-server", sock=host)
                 client = self.attach("notes")
                 self.tmux("send-keys", "-t", "h:", "C-b", "a", sock=host)
-                for _ in range(300):
-                    if f"agent-{len(name)}" in self.host_screen(host):
-                        break
-                    time.sleep(0.1)
-                else:
+                label = f"agent-{len(name)}"
+                if not support.wait_until(
+                    lambda h=host, t=label: t in self.host_screen(h)
+                ):
                     self.fail(f"no agents popup:\n{self.host_screen(host)}")
                 self.tmux("send-keys", "-t", "h:", "Escape", sock=host)
-                for _ in range(300):
-                    if f"agent-{len(name)}" not in self.host_screen(host):
-                        break
-                    time.sleep(0.1)
+                support.wait_until(lambda h=host, t=label: t not in self.host_screen(h))
                 # prefix T: `connect --pane` makes a session at the pane's cwd.
                 cwd = self.tmp / f"cwd{len(name)}"
                 cwd.mkdir()
                 self.tmux("send-keys", "-t", "notes:", f"cd {cwd}", "Enter")
                 self.wait_for_cwd("notes:", cwd)
                 self.tmux("send-keys", "-t", "h:", "C-b", "T", sock=host)
-                for _ in range(300):
-                    if f"cwd{len(name)}" in self.tmux("list-sessions"):
-                        break
-                    time.sleep(0.1)
-                else:
+                made = f"cwd{len(name)}"
+                if not support.wait_until(
+                    lambda t=made: t in self.tmux("list-sessions")
+                ):
                     self.fail(
                         "prefix T made no session: "
                         + self.tmux("list-sessions")
