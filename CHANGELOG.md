@@ -26,6 +26,9 @@ versions follow [SemVer](https://semver.org/).
   `@murmur_session_state` without murmur. The picker row gained `host`,
   `pane`, `jump_target` and `here` fields, and the state column is wider.
 
+- The picker key now runs through `run-shell` and passes `--client`, so a
+  failure is shown on the client that opened the picker.
+
 ### Fixed
 
 - A new session for a directory no longer lands in another directory's session
