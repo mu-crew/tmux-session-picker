@@ -1001,10 +1001,7 @@ class TmuxBackend:
         if os.environ.get("TMUX"):
             tmux_cmd("switch-client", "-t", exact_session_target(name), capture=False)
         else:
-            subprocess.run(
-                ["tmux", "attach-session", "-t", exact_session_target(name)],
-                check=True,
-            )
+            tmux_cmd("attach-session", "-t", exact_session_target(name), capture=False)
         update_last(name)
 
     def ensure_server(self) -> None:

@@ -198,6 +198,19 @@ class Paths(unittest.TestCase):
             self.assertEqual(len(listed), 1)
 
 
+@contextlib.contextmanager
+def mock_env(env, remove=()):
+    saved = dict(os.environ)
+    os.environ.update(env)
+    for key in remove:
+        os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 class Config(unittest.TestCase):
     def setUp(self):
         tsesh.load_config.cache_clear()
@@ -252,6 +265,21 @@ class PreviewEmptyPath(unittest.TestCase):
             tsesh.preview("", "gone", "")
         self.assertEqual(calls, [])
         self.assertIn("session: gone", out.getvalue())
+
+
+class AttachUsesSocket(unittest.TestCase):
+    def test_attach_targets_the_isolated_server(self):
+        argvs = []
+        old_run, old_last = tsesh.subprocess.run, tsesh.update_last
+        tsesh.subprocess.run = lambda argv, **kw: argvs.append(argv)
+        tsesh.update_last = lambda name: None
+        self.addCleanup(setattr, tsesh.subprocess, "run", old_run)
+        self.addCleanup(setattr, tsesh, "update_last", old_last)
+        env = {"TSESH_TMUX_SOCKET_PATH": "/tmp/x.sock"}
+        with mock_env(env, remove=("TMUX",)):
+            tsesh.TmuxBackend().switch("work")
+        self.assertEqual(argvs[0][:3], ["tmux", "-S", "/tmp/x.sock"])
+        self.assertIn("attach-session", argvs[0])
 
 
 class BuildEntries(unittest.TestCase):
