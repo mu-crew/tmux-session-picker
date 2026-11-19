@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -65,11 +65,28 @@ STATE_GLYPH: dict[AgentState, str] = {
 ATTENTION_STATES = frozenset({AgentState.blocked, AgentState.error, AgentState.crashed})
 
 
+# While set, every tmux call names this exact socket instead of following an
+# alias ($TMUX, a symlink) that could be retargeted after a proof was made.
+PINNED_SOCKET: str | None = None
+
+
+@contextlib.contextmanager
+def pinned_server(socket: str) -> Iterator[None]:
+    global PINNED_SOCKET
+    previous, PINNED_SOCKET = PINNED_SOCKET, socket
+    try:
+        yield
+    finally:
+        PINNED_SOCKET = previous
+
+
 def tmux_socket_args() -> tuple[str, ...]:
     """``-S``/``-L`` args for an isolated server; empty for the default.
 
     ``TSESH_TMUX_SOCKET_PATH`` and ``TSESH_TMUX_SOCKET_NAME`` exist for tests.
     """
+    if PINNED_SOCKET:
+        return ("-S", PINNED_SOCKET)
     if path := os.environ.get("TSESH_TMUX_SOCKET_PATH"):
         return ("-S", path)
     if name := os.environ.get("TSESH_TMUX_SOCKET_NAME"):
@@ -260,6 +277,7 @@ FZF_ROW_FIELDS: tuple[str, ...] = (
     "pane",  # agent rows: tmux pane id
     "jump_target",  # agent rows: murmur's opaque token for `murmur jump`
     "here",  # agent rows: "1" when the pane is on the tmux server tsesh talks to
+    "socket",  # agent rows: the socket that proof was made against
 )
 
 
@@ -296,6 +314,7 @@ class Entry:
     pane: str = ""
     jump_target: str = ""
     here: str = ""
+    socket: str = ""
     detail: str = ""  # shown where a path would be (agent rows)
 
     @property
@@ -347,6 +366,7 @@ class Entry:
             "pane": self.pane,
             "jump_target": self.jump_target,
             "here": self.here,
+            "socket": self.socket,
         }
         return "\t".join(values[name] for name in FZF_ROW_FIELDS)
 
@@ -387,6 +407,7 @@ class EntryPayload:
     pane: str = ""
     jump_target: str = ""
     here: str = ""
+    socket: str = ""
 
     @classmethod
     def from_fzf_row(cls, row: str) -> EntryPayload:
@@ -401,6 +422,7 @@ class EntryPayload:
             pane=fields["pane"],
             jump_target=fields["jump_target"],
             here=fields["here"],
+            socket=fields["socket"],
         )
 
 
@@ -1030,6 +1052,7 @@ def agent_entries(
                     pane=clean_field(pane.get("pane")),
                     jump_target=clean_field(pane.get("jump_target")),
                     here="1" if is_here else "",
+                    socket=(own_socket() or "") if is_here else "",
                     detail=" · ".join(p for p in parts if p),
                 )
             )
@@ -1227,12 +1250,14 @@ def preview(
     host: str = "",
     pane: str = "",
     here: str = "",
+    socket: str = "",
 ) -> int:
     if kind == "agent":
-        if here and pane:
-            capture = tmux_cmd(
-                "capture-pane", "-p", "-J", "-t", pane, "-S", "-200", check=False
-            )
+        if proven_here(here, socket) and pane:
+            with pinned_server(socket):
+                capture = tmux_cmd(
+                    "capture-pane", "-p", "-J", "-t", pane, "-S", "-200", check=False
+                )
             if capture.returncode == 0:
                 print(capture.stdout.rstrip())
                 return 0
@@ -1308,7 +1333,7 @@ def _fzf_command(mode: str, query: str = "") -> list[str]:
         "--preview-window",
         "right:55%,border-left",
         "--preview",
-        f"{sh_quote(sys.argv[0])} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}}",
+        f"{sh_quote(sys.argv[0])} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}} --socket {{11}}",
     ]
     if load_config().fzf_exact:
         # Substring (literal) matching only. Prefix a token with `'` to opt
@@ -1371,6 +1396,12 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
     )
 
 
+def proven_here(here: str, socket: str) -> bool:
+    """A row's server proof still holds: the socket it was made against is
+    still the one tsesh's own calls reach."""
+    return bool(here and socket and own_socket() == socket)
+
+
 def connect_agent(payload: EntryPayload) -> int:
     """Take the user to an agent's pane.
 
@@ -1378,10 +1409,13 @@ def connect_agent(payload: EntryPayload) -> int:
     server) and the client moved to it. Anything else, such as a remote host or
     a private tmux server, is murmur's to reach: ``murmur jump``.
     """
-    if payload.here and payload.pane:
-        tmux_cmd("select-window", "-t", payload.pane)
-        tmux_cmd("select-pane", "-t", payload.pane)
-        backend().switch(payload.session_name, target=payload.pane)
+    if proven_here(payload.here, payload.socket) and payload.pane:
+        # Pinned: the calls below name the proven socket itself, so an alias
+        # retargeted after this check cannot redirect them.
+        with pinned_server(payload.socket):
+            tmux_cmd("select-window", "-t", payload.pane)
+            tmux_cmd("select-pane", "-t", payload.pane)
+            backend().switch(payload.session_name, target=payload.pane)
         return 0
     exe = murmur_command()
     if exe is None or not payload.jump_target:
@@ -1759,6 +1793,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_preview.add_argument("--host", default="")
         p_preview.add_argument("--pane", default="")
         p_preview.add_argument("--here", default="")
+        p_preview.add_argument("--socket", default="")
 
         sub.add_parser("last")
 
@@ -1785,6 +1820,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 args.host,
                 args.pane,
                 args.here,
+                args.socket,
             )
         if args.cmd == "last":
             return last()

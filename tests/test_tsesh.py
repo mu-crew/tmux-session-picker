@@ -1454,6 +1454,100 @@ class RemoteAttachments(FakeMurmur):
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class StaleSocketAlias(FakeMurmur):
+    """The proof that a row is on tsesh's server must hold at the operation."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.dirs = {}
+        for name in ("A", "B"):
+            d = self.tmp / name
+            d.mkdir()
+            self.dirs[name] = d
+            tmux = ["tmux", "-f", "/dev/null", "-S", str(d / "s")]
+            subprocess.run(
+                [
+                    *tmux,
+                    "new-session",
+                    "-d",
+                    "-s",
+                    f"srv{name}",
+                    f"echo SERVER_{name}; sleep 60",
+                ],
+                check=True,
+            )
+            self.addCleanup(subprocess.run, [*tmux, "kill-server"], capture_output=True)
+        import time
+
+        time.sleep(0.4)
+        self.alias = self.tmp / "alias"
+        self.alias.symlink_to(self.dirs["A"])
+        cfg = config()
+        for owner, attr, value in (
+            (tsesh, "load_config", lambda: cfg),
+            (tsesh, "zoxide_paths", list),
+        ):
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
+        physical_a = {"kind": "path", "value": str(self.dirs["A"].resolve() / "s")}
+        self.install([agent_pane(pane="%0", server=physical_a, session_name="srvA")])
+        os.environ["TSESH_TMUX_SOCKET_PATH"] = str(self.alias / "s")
+        cfg2 = config()
+        with unittest.mock.patch.object(tsesh, "load_config", lambda: cfg2):
+            self.row = next(e for e in tsesh.build_entries("all") if e.kind == "agent")
+        self.assertEqual(self.row.here, "1")
+
+    def retarget(self):
+        self.alias.unlink()
+        self.alias.symlink_to(self.dirs["B"])
+
+    def test_preview_after_retarget_does_not_capture_the_other_server(self):
+        payload = tsesh.EntryPayload.from_fzf_row(self.row.to_fzf_row())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tsesh.preview(
+                "",
+                payload.session_name,
+                "agent",
+                "",
+                payload.host,
+                payload.pane,
+                payload.here,
+                payload.socket,
+            )
+        self.assertIn("SERVER_A", out.getvalue())  # before: the proven server
+        self.retarget()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tsesh.preview(
+                "",
+                payload.session_name,
+                "agent",
+                "",
+                payload.host,
+                payload.pane,
+                payload.here,
+                payload.socket,
+            )
+        self.assertNotIn("SERVER_B", out.getvalue())
+        self.assertIn("host:", out.getvalue())
+
+    def test_enter_after_retarget_delegates_instead_of_acting_on_the_other(self):
+        payload = tsesh.EntryPayload.from_fzf_row(self.row.to_fzf_row())
+        self.retarget()
+        switched = []
+        with unittest.mock.patch.object(
+            tsesh.TmuxBackend,
+            "switch",
+            lambda self, name, target=None: switched.append(name),
+        ):
+            self.assertEqual(tsesh.connect_agent(payload), 0)
+        self.assertEqual(switched, [])
+        self.assertIn("jump j1:abc", self.calls())
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
 class AmbientServer(FakeMurmur):
     """tsesh with no socket override talks to the server $TMUX names."""
 
