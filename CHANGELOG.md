@@ -5,6 +5,17 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The preview is faster: a live session's preview takes one tmux call instead
+  of five, and the built-in directory listing runs without a login shell. A
+  `preview_command` set in the config still runs in `sh -l`.
+
+### Fixed
+
+- A live session's preview names the session and its attached clients again
+  on its first line; on recent tmux that line was blank.
+
 ## [1.0.0] - 2026-11-19
 
 ### Changed (breaking)

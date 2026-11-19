@@ -1745,73 +1745,63 @@ def build_view(
     return View(entries, header_text(mode, notice=notice), prompt_text(mode, crew))
 
 
-def tmux_session_preview(name: str) -> int:
-    session = tmux_cmd(
-        "display-message",
-        "-p",
-        "-t",
-        exact_session_target(name),
-        "#{session_name}\t#{session_attached}",
-        check=False,
-    )
-    if session.returncode != 0:
-        return 1
+def tmux_session_preview(name: str) -> bool:
+    """Print a live session's windows and its active pane; False if the
+    session is not there.
 
-    windows = tmux_cmd(
+    One tmux call: the window list, a marker line, then the capture. The
+    window list fails for a missing session and stops the chain before the
+    marker.
+    """
+    marker = f"tsesh-{os.urandom(8).hex()}"
+    result = tmux_cmd(
         "list-windows",
         "-t",
         exact_session_target(name),
         "-F",
-        # The path last: it may hold a tab (a window name is assumed not to).
-        "#{window_index}\t#{window_active}\t#{window_panes}"
-        "\t#{@murmur_window_state}\t#{window_name}\t#{pane_current_path}",
-        check=False,
-    )
-    panes = tmux_cmd(
-        "list-panes",
+        # The pane fields are the window's active pane. The path last: it
+        # may hold a tab (a window name is assumed not to).
+        "#{session_attached}\t#{window_index}\t#{window_active}\t#{window_panes}"
+        "\t#{@murmur_window_state}\t#{pane_index}\t#{pane_current_command}"
+        "\t#{window_name}\t#{pane_current_path}",
+        ";",
+        "display-message",
+        "-p",
+        marker,
+        ";",
+        "capture-pane",
+        "-p",
+        "-J",
         "-t",
-        exact_session_target(name),
-        "-F",
-        "#{window_index}\t#{pane_index}\t#{pane_active}\t#{window_active}\t#{pane_current_command}\t#{pane_current_path}",
+        active_pane_target(name),
+        "-S",
+        "-200",
         check=False,
     )
-    if windows.returncode != 0 or panes.returncode != 0:
-        print(session.stdout.strip())
-        return 0
+    windows, found, capture = result.stdout.partition(f"{marker}\n")
+    if not found:
+        return False
 
-    session_name, _, attached = session.stdout.strip().partition("\t")
+    attached = ""
     attention_total = 0
-    active_window_index = ""
+    active_pane = ""
     window_lines: list[str] = []
-    for line in windows.stdout.splitlines():
-        parts = line.split("\t", 5)
-        if len(parts) != 6:
+    for line in windows.splitlines():
+        parts = line.split("\t", 8)
+        if len(parts) != 9:
             continue
-        index, active, pane_count, raw_state, window_name, window_path = parts
+        attached, index, active, pane_count, raw_state = parts[:5]
+        pane_index, command, window_name, window_path = parts[5:]
         state = AgentState.parse(raw_state)
         if state in ATTENTION_STATES:
             attention_total += 1
-        if active == "1":
-            active_window_index = index
+        if active == "1" and not active_pane:
+            active_pane = f"{pane_index}  {command}"
         glyph = STATE_GLYPH[state] if state else " "
         window_lines.append(
             f"{'*' if active == '1' else ' '} {index} {glyph} {window_name}"
             f"  {pane_count}p  {tildify(window_path)}"
         )
-
-    active_pane_index = ""
-    active_command = ""
-    for line in panes.stdout.splitlines():
-        parts = line.split("\t", 5)
-        if len(parts) != 6:
-            continue
-        window_index, pane_index, pane_active, window_active, command, _ = parts
-        if window_active == "1" and pane_active == "1":
-            active_pane_index = pane_index
-            active_command = command
-            if not active_window_index:
-                active_window_index = window_index
-            break
 
     meta: list[str] = []
     if attached:
@@ -1819,27 +1809,19 @@ def tmux_session_preview(name: str) -> int:
     if attention_total:
         meta.append(f"attention {attention_total}")
     suffix = f" ({', '.join(meta)})" if meta else ""
-    print(f"{session_name}{suffix}")
+    print(f"{name}{suffix}")
     # Every window: active marker, index, state, name, panes, cwd.
     for line in window_lines:
         print(line)
-    if active_pane_index:
-        print(f"pane: {active_pane_index}  {active_command}")
+    if active_pane:
+        print(f"pane: {active_pane}")
     print()
 
-    target = (
-        exact_pane_target(name, f"{active_window_index}.{active_pane_index}")
-        if active_window_index and active_pane_index
-        else active_pane_target(name)
-    )
-    capture = tmux_cmd(
-        "capture-pane", "-p", "-J", "-t", target, "-S", "-200", check=False
-    )
-    if capture.returncode != 0:
+    if result.returncode != 0:
         print("(unable to capture active pane)")
-        return 0
-    print(capture.stdout.rstrip())
-    return 0
+        return True
+    print(capture.rstrip())
+    return True
 
 
 def preview(
@@ -1863,8 +1845,9 @@ def preview(
                 return 0
         print(f"host: {host or '(unknown)'}\nsession: {session_name or '(unknown)'}")
         return 0
-    if kind in {"tmux", "default"} and session_name and backend().exists(session_name):
-        return tmux_session_preview(session_name)
+    live = kind in {"tmux", "default"} and session_name
+    if live and tmux_session_preview(session_name):
+        return 0
 
     target = expand(path) if path else ""
     if not target:
@@ -1875,9 +1858,14 @@ def preview(
         return 0
     if split:
         print(f"split: {split}\n")
-    os.execvp(
-        "sh", ["sh", "-lc", load_config().preview_command.format(path=sh_quote(target))]
-    )
+    command = load_config().preview_command
+    if command == default_preview_command():
+        # No shell for the built-in command: a login shell costs more than
+        # the listing.
+        argv = [target if word == "{path}" else word for word in command.split()]
+        os.execvp(argv[0], argv)
+    else:
+        os.execvp("sh", ["sh", "-lc", command.format(path=sh_quote(target))])
     return 0
 
 

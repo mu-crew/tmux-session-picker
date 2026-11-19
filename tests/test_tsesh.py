@@ -589,6 +589,31 @@ class PreviewEmptyPath(unittest.TestCase):
         self.assertIn("session: gone", out.getvalue())
 
 
+class PreviewCommand(unittest.TestCase):
+    def preview_argv(self, command):
+        calls = []
+        cfg = config(preview_command=command)
+        for owner, attr, value in (
+            (tsesh.os, "execvp", lambda *a: calls.append(a)),
+            (tsesh, "load_config", lambda: cfg),
+        ):
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
+        tsesh.preview("/srv/a dir", "", "zoxide")
+        self.assertEqual(len(calls), 1)
+        return calls[0]
+
+    def test_default_command_runs_without_a_shell(self):
+        file, argv = self.preview_argv(tsesh.default_preview_command())
+        self.assertEqual(argv[0], file)
+        self.assertNotEqual(file, "sh")
+        self.assertEqual(argv[-1], "/srv/a dir")
+
+    def test_configured_command_runs_in_a_login_shell(self):
+        file, argv = self.preview_argv("tree {path}")
+        self.assertEqual((file, argv), ("sh", ["sh", "-lc", "tree '/srv/a dir'"]))
+
+
 class AttachUsesSocket(unittest.TestCase):
     def test_attach_targets_the_isolated_server(self):
         argvs = []

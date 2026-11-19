@@ -974,6 +974,22 @@ class WindowPaths(unittest.TestCase):
         self.assertTrue(windows[0].startswith("* 0 "), windows)
         self.assertIn("2p  ~/root", windows[0])
         self.assertIn("side  1p  ~/other", windows[1])
+        self.assertEqual(lines[0], "proj (attached 0)")
+        self.assertIn("pane: 0  sleep", lines)
+
+    def test_preview_of_a_gone_session_shows_its_directory(self):
+        (self.dirs["zox"] / "marker-file").touch()
+        out = self.tsesh(
+            "preview",
+            "--kind",
+            "tmux",
+            "--session-name",
+            "gone",
+            "--path",
+            str(self.dirs["zox"]),
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("marker-file", out.stdout)
 
     def test_a_pinned_session_not_running_keeps_its_configured_path(self):
         self.config(f'[[sessions]]\nname = "pin"\npath = "{self.dirs["zox"]}"\n')
