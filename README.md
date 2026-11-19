@@ -84,7 +84,8 @@ With no server running, the picker starts one the same way (`start-server`)
 before it lists live sessions, so a tmux that restores saved sessions at server
 start shows them. When creating a session, tsesh checks again after starting
 the server and switches to the session if it came back, instead of running
-`new-session`. Plain tmux has no snapshot: `start-server` exits at once and
+`new-session`. A restored session therefore skips its configured `startup`
+and `split`: those run only when tsesh creates the session. Plain tmux has no snapshot: `start-server` exits at once and
 nothing changes.
 
 ## Theme

@@ -192,6 +192,20 @@ CATPPUCCIN = {
 }
 # THEME END: tsesh-palette
 
+# (foreground, bold) per row state. Working and waiting keep the kind colour.
+STATE_STYLE: dict[AgentState | None, tuple[str, bool]] = {
+    AgentState.crashed: (CATPPUCCIN["red"], True),
+    AgentState.error: (CATPPUCCIN["maroon"], True),
+    AgentState.blocked: (CATPPUCCIN["peach"], True),
+    AgentState.done: (CATPPUCCIN["teal"], False),
+}
+KIND_FG: dict[str, str] = {
+    "default": CATPPUCCIN["lavender"],
+    "tmux": CATPPUCCIN["sky"],
+    "zoxide": CATPPUCCIN["sapphire"],
+    "find": CATPPUCCIN["subtext0"],
+}
+
 FZF_BORDER_LABEL = " sessions "
 UNDERLINE = "\x1b[4m"
 RESET = "\x1b[0m"
@@ -275,43 +289,13 @@ class Entry:
         text = f"{self.icon}  {name} {glyph}"
         if self.display_path:
             text = f"{text}      {self.display_path}"
-        if self.worst_state is AgentState.crashed:
-            return ansi_style(
-                text,
-                fg=CATPPUCCIN["red"],
-                bg=CATPPUCCIN["surface0"],
-                bold=True,
-            )
-        if self.worst_state is AgentState.error:
-            return ansi_style(
-                text,
-                fg=CATPPUCCIN["maroon"],
-                bg=CATPPUCCIN["surface0"],
-                bold=True,
-            )
-        if self.worst_state in ATTENTION_STATES:
-            return ansi_style(
-                text,
-                fg=CATPPUCCIN["peach"],
-                bg=CATPPUCCIN["surface0"],
-                bold=True,
-            )
-        # Below crashed/attention on purpose: done is informational, and a
-        # blocked or crashed agent in the same session must still win.
-        if self.worst_state is AgentState.done:
-            return ansi_style(
-                text,
-                fg=CATPPUCCIN["teal"],
-                bg=CATPPUCCIN["surface0"],
-            )
-        style_map: dict[str, str] = {
-            "default": CATPPUCCIN["lavender"],
-            "tmux": CATPPUCCIN["sky"],
-            "zoxide": CATPPUCCIN["sapphire"],
-            "find": CATPPUCCIN["subtext0"],
-        }
+        # Agent states win over the kind colour: a blocked or crashed agent
+        # must still show when the session is also pinned or live.
+        if style := STATE_STYLE.get(self.worst_state):
+            fg, bold = style
+            return ansi_style(text, fg=fg, bg=CATPPUCCIN["surface0"], bold=bold)
         style_kind = "tmux" if self.kind == "default" and self.is_running else self.kind
-        fg = style_map.get(style_kind)
+        fg = KIND_FG.get(style_kind)
         if fg is None:
             return text
         return ansi_style(text, fg=fg)
@@ -349,8 +333,8 @@ class Entry:
 class EntryPayload:
     """Typed view of the fields that survive an Entry's fzf round-trip.
 
-    ``Entry`` carries display-only fields (icon, attention_count, is_running,
-    rendered text) that aren't worth re-deriving on selection. Anything the
+    ``Entry`` carries display-only fields (icon, is_running, rendered
+    text) that aren't worth re-deriving on selection. Anything the
     ``connect_*`` path actually needs lives here, so consumers don't have
     to reach into the dict-shaped output of :meth:`Entry.from_fzf_row`.
     """
@@ -542,7 +526,7 @@ def is_useful_path(path: str, *, mode: str, config: Config) -> bool:
 def require_str_list(value: object, key: str, path: Path) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ConfigError(f"{path}: {key} must be an array of strings")
-    return [item for item in value if isinstance(item, str)]
+    return value
 
 
 LEGACY_CONFIG_PATH = Path.home() / ".config" / "tmux" / "tms.toml"
@@ -866,11 +850,7 @@ def tmux_session_preview(name: str) -> int:
 
 
 def preview(path: str, session_name: str = "", kind: str = "", split: str = "") -> int:
-    if (
-        kind in {"tmux", "default"}
-        and session_name
-        and tmux_session_exists(session_name)
-    ):
+    if kind in {"tmux", "default"} and session_name and backend().exists(session_name):
         return tmux_session_preview(session_name)
 
     target = expand(path) if path else ""
@@ -948,23 +928,30 @@ def _fzf_command(mode: str, query: str = "") -> list[str]:
     ]
     if load_config().fzf_exact:
         # Substring (literal) matching only. Prefix a token with `'` to opt
-        # back into fuzzy for that token. Inserted right after the base flags
-        # so the rest of the command (binds, preview) is unaffected by the
-        # config toggle.
-        cmd.insert(4, "--exact")
+        # back into fuzzy for that token.
+        cmd.append("--exact")
     if query:
         cmd.extend(["--query", query])
     return cmd
 
 
-def fzf(mode: str = "all", query: str = "") -> int:
+def run_fzf(
+    mode: str, query: str, *, capture: bool
+) -> subprocess.CompletedProcess[str]:
     backend().ensure_server()
     mode = effective_initial_mode(mode)
     entries = "\n".join(entry.to_fzf_row() for entry in build_entries(mode))
-    proc = subprocess.run(
-        _fzf_command(mode, query=query), input=entries, text=True, check=False
+    return subprocess.run(
+        _fzf_command(mode, query=query),
+        input=entries,
+        text=True,
+        capture_output=capture,
+        check=False,
     )
-    return proc.returncode
+
+
+def fzf(mode: str = "all", query: str = "") -> int:
+    return run_fzf(mode, query, capture=False).returncode
 
 
 def pick_and_connect(mode: str = "all", query: str = "") -> int:
@@ -973,16 +960,7 @@ def pick_and_connect(mode: str = "all", query: str = "") -> int:
     fzf writes its UI to /dev/tty when stdout is captured, so the picker
     still renders interactively while we keep the selection in-process.
     """
-    backend().ensure_server()
-    mode = effective_initial_mode(mode)
-    entries = "\n".join(entry.to_fzf_row() for entry in build_entries(mode))
-    proc = subprocess.run(
-        _fzf_command(mode, query=query),
-        input=entries,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    proc = run_fzf(mode, query, capture=True)
     if proc.returncode != 0:
         return proc.returncode
     # Strip only the trailing newline fzf appends, not surrounding whitespace.
@@ -1100,34 +1078,22 @@ def backend() -> TmuxBackend:
     return BACKEND
 
 
-def tmux_session_exists(name: str) -> bool:
-    return backend().exists(name)
-
-
-def switch_or_attach(name: str) -> None:
-    backend().switch(name)
-
-
-def create_session(name: str, path: str, startup: str | None, split: str = "") -> None:
-    backend().create(name, path, startup, split)
-
-
 def connect_resolved(
     session_name: str,
     path: str | None,
     startup: str | None,
     split: str = DEFAULT_SPLIT,
 ) -> int:
-    if tmux_session_exists(session_name):
-        switch_or_attach(session_name)
+    if backend().exists(session_name):
+        backend().switch(session_name)
         return 0
 
     if path is None:
         print(f"No such session or path: {session_name}", file=sys.stderr)
         return 1
 
-    create_session(session_name, path, startup, split)
-    switch_or_attach(session_name)
+    backend().create(session_name, path, startup, split)
+    backend().switch(session_name)
     return 0
 
 
@@ -1169,7 +1135,7 @@ def free_name_for_path(name: str, path: str) -> str:
     """
     wanted = Path(path).expanduser().resolve()
     candidate, n = name, 1
-    while tmux_session_exists(candidate):
+    while backend().exists(candidate):
         existing = tmux_session_path(candidate)
         if existing and Path(existing).resolve() == wanted:
             return candidate
@@ -1195,7 +1161,7 @@ def connect(target: str) -> int:
     # ~/dotfiles, where stow packages mirror live session names) gets mangled
     # into `dotfiles/foot` by session_name_for_path below, and a new
     # session is spawned instead of switching to the running one.
-    if tmux_session_exists(target):
+    if backend().exists(target):
         return connect_resolved(target, None, None, DEFAULT_SPLIT)
     # Either a real path (create/attach a session rooted there) or a bare
     # session name (attach if it exists, error otherwise — connect_resolved
@@ -1221,10 +1187,13 @@ def last() -> int:
         if name and name not in candidates:
             candidates.append(name)
     for name in candidates:
-        if tmux_session_exists(name):
-            switch_or_attach(name)
+        if backend().exists(name):
+            backend().switch(name)
             return 0
     return 0
+
+
+MODES = ["all", "default", "tmux", "zoxide", "find"]
 
 
 def pause_for_error() -> None:
@@ -1241,14 +1210,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_list = sub.add_parser("list")
         p_list.add_argument(
             "--mode",
-            choices=["all", "default", "tmux", "zoxide", "find"],
+            choices=MODES,
             default="all",
         )
 
         p_pick = sub.add_parser("picker")
         p_pick.add_argument(
             "--mode",
-            choices=["all", "default", "tmux", "zoxide", "find"],
+            choices=MODES,
             default="all",
         )
         p_pick.add_argument("--query", default="")
@@ -1256,7 +1225,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_pick_connect = sub.add_parser("pick-and-connect")
         p_pick_connect.add_argument(
             "--mode",
-            choices=["all", "default", "tmux", "zoxide", "find"],
+            choices=MODES,
             default="all",
         )
         p_pick_connect.add_argument("--query", default="")

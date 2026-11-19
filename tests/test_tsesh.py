@@ -439,12 +439,12 @@ class NameCollision(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.addCleanup(self._kill)
         self.run_tmux("new-session", "-d", "-s", "keep")
-        for attr, value in (
-            ("start_server_in_own_scope", lambda args: False),
-            ("switch_or_attach", lambda name: None),
+        for owner, attr, value in (
+            (tsesh, "start_server_in_own_scope", lambda args: False),
+            (tsesh.TmuxBackend, "switch", lambda self, name: None),
         ):
-            self.addCleanup(setattr, tsesh, attr, getattr(tsesh, attr))
-            setattr(tsesh, attr, value)
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
 
     def run_tmux(self, *args):
         return subprocess.run(
@@ -544,9 +544,9 @@ class ServerStartRestore(unittest.TestCase):
     def test_connect_switches_to_restored_session(self):
         fake = FakeServer(restores={"work"}).patched(self)
         switched = []
-        old = tsesh.switch_or_attach
-        tsesh.switch_or_attach = switched.append
-        self.addCleanup(setattr, tsesh, "switch_or_attach", old)
+        old = tsesh.TmuxBackend.switch
+        tsesh.TmuxBackend.switch = lambda self, name: switched.append(name)
+        self.addCleanup(setattr, tsesh.TmuxBackend, "switch", old)
         self.assertEqual(tsesh.connect_resolved("work", "/", None), 0)
         self.assertEqual(switched, ["work"])
         self.assertNotIn("new-session", fake.verbs())
