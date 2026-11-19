@@ -199,7 +199,7 @@ def fit(text: str, width: int, *, keep: str = "end") -> str:
 
     KEEP says what survives a cut: the start ("end": cut the end), the tail
     ("start": cut the start, for paths), or both ends of a slash-separated
-    name ("middle": hacking/…/murmur).
+    name ("middle": projects/…/demo).
     """
     if width <= 0:
         return ""

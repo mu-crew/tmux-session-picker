@@ -178,8 +178,8 @@ snapshot: `start-server` exits at once and nothing changes.
 The picker fits its columns to the popup. The preview sits right of the list
 from 120 columns, below it from 80, and starts hidden under 80 (`ctrl-/` shows
 it). The name column grows from 16 to 40 cells with the list; a long name keeps
-its last part whole and shortens the start (`hacking/cr…/murmur`), and a long
-path keeps its end (`…ng/crew/murmur`).
+its last part whole and shortens the start (`projects/te…/demo`), and a long
+path keeps its end (`…ects/team/demo`).
 On a narrow list the window counts go first, then the path. Widths are counted
 in terminal cells, so wide (CJK) names keep the columns aligned. Resizing the
 popup lays the list out again.

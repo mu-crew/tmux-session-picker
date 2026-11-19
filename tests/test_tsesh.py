@@ -189,9 +189,9 @@ def long_rows():
     return [
         tsesh.Entry(
             kind="tmux",
-            name="hacking/crew/some-very-long-project-name/murmur",
+            name="projects/team/some-very-long-project-name/demo",
             session_name="x",
-            detail="~/hacking/crew/some/very/deep/directory/tree/murmur",
+            detail="~/projects/team/some/very/deep/directory/tree/demo",
             extra="+3",
             counts="12w 34p",
             agent_counts=counts,
@@ -246,9 +246,9 @@ class ResponsiveLayout(unittest.TestCase):
         self.assertEqual(widths[3:], sorted(widths[3:]))
         at_width(self, 100)
         row = ANSI.sub("", long_rows()[0].visible_text())
-        self.assertIn("hacking/crew/some-very-\u2026/murmur ", row)  # leaf whole
-        self.assertIn("\u2026", row.split("murmur", 1)[1])  # path cut at its start
-        self.assertTrue(row.rstrip().endswith("tree/murmur +3"), row)
+        self.assertIn("projects/team/some-very-l\u2026/demo ", row)  # leaf whole
+        self.assertIn("\u2026", row.split("demo", 1)[1])  # path cut at its start
+        self.assertTrue(row.rstrip().endswith("tree/demo +3"), row)
 
     def test_escaped_text_fits_and_keeps_its_tail(self):
         path = "/srv/backslashes-" + "\\" * 12 + "Z"
@@ -294,7 +294,7 @@ class ResponsiveLayout(unittest.TestCase):
                     )
                 self.assertNotEqual(shown[0], shown[1])
         self.assertEqual(
-            tsesh.fit("hacking/crew/murmur", 16, keep="middle"), "hacking/…/murmur"
+            tsesh.fit("projects/team/demo", 15, keep="middle"), "projects/…/demo"
         )
         self.assertEqual(tsesh.fit("a/" + "x" * 30, 10, keep="middle"), "x" * 9 + "…")
 
