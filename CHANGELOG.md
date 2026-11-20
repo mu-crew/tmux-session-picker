@@ -5,6 +5,17 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The picker opens faster: it starts fewer processes, and murmur's snapshot
+  read now overlaps the tmux calls.
+  - Sessions and windows come from one tmux call instead of two.
+  - The agents view no longer runs `murmur jump --help` on every open. A
+    snapshot with `jump_target` already shows that `murmur jump` exists (both
+    came in murmur 2.3.0).
+  - The background `murmur collect` runs at a lower priority, and only when
+    some peer was last fetched over 20 seconds ago or is stale.
+
 ## [1.0.0] - 2026-11-19
 
 ### Changed (breaking)

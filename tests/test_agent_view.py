@@ -283,7 +283,7 @@ class AgentPicker(Harness):
         self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
         calls = self.murmur_calls()
         self.assertEqual(calls.count("status --json --cached"), 1, calls)
-        self.assertEqual(calls.count("jump --help"), 1, calls)
+        self.assertNotIn("jump --help", calls)
 
 
 class CurrentMarker(Harness):
@@ -403,7 +403,6 @@ class MurmurUnavailable(Harness):
         self.snapshot([self.own()])
         too_old = "murmur too old for the agent view"
         self.assertIn(too_old, self.header(FAKE_MURMUR_MODE="old"))
-        self.assertIn(too_old, self.header(FAKE_MURMUR_NOJUMP="1"))
 
     def test_malformed_snapshot(self):
         for doc in (

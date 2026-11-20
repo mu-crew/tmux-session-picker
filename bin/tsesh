@@ -1209,34 +1209,93 @@ OLD_MURMUR = "murmur too old for the agent view"
 SLOW_MURMUR = "murmur did not answer in time"
 
 
+# Views that read murmur's snapshot.
+MURMUR_MODES = frozenset({"all", "sessions", "agents"})
+
+# A ``status --json --cached`` started early by prefetch_murmur: the process
+# and the murmur it runs.
+_PENDING_STATUS: tuple[subprocess.Popen[str], str] | None = None
+
+
+def _start_status(exe: str) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [exe, "status", "--json", "--cached"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+
+
+def prefetch_murmur(mode: str) -> None:
+    """Start murmur's snapshot read now, so node starts up while tsesh asks
+    tmux; murmur_snapshot collects the answer. A no-op for a view without
+    murmur, without murmur installed, or with a read already started."""
+    global _PENDING_STATUS
+    if mode not in MURMUR_MODES or _PENDING_STATUS is not None:
+        return
+    exe = murmur_command()
+    if exe is None:
+        return
+    with contextlib.suppress(OSError):
+        _PENDING_STATUS = (_start_status(exe), exe)
+
+
+# murmur's ambient collect skips a peer attempted within its floor (30s, less
+# up to half its 20s jitter), so a peer fetched more recently than this is not
+# due and starting a collect for it is a wasted node process.
+PEER_FRESH_MS = 20_000
+
+
+def peers_due(peers: list[dict], now_ms: float | None = None) -> bool:
+    """Whether a ``collect --floored`` could fetch any peer: one that is
+    stale, never fetched, or fetched longer ago than PEER_FRESH_MS."""
+    now_ms = time.time() * 1000 if now_ms is None else now_ms
+    for peer in peers:
+        fetched = peer.get("fetched_at")
+        if peer.get("stale") is True or not isinstance(fetched, (int, float)):
+            return True
+        if now_ms - fetched >= PEER_FRESH_MS:
+            return True
+    return False
+
+
+def _lower_priority() -> None:
+    with contextlib.suppress(OSError):
+        os.nice(10)
+
+
 def murmur_snapshot() -> tuple[Snapshot | None, str]:
     """murmur's agent panes and peers, or None and the reason there are none.
 
     One cache-only read (``status --json --cached``: it never reaches a peer),
-    under a short timeout. Capability is probed by the call itself: it must
-    succeed and the panes must carry the derived fields tsesh consumes
-    (``render_state``, ``jump_target``). Version numbers are never compared. On
-    success a detached ``collect`` warms the cache for the next open.
+    under a short timeout; started by prefetch_murmur when a caller could.
+    Capability is probed by the call itself: it must succeed and the panes
+    must carry the derived fields tsesh consumes (``render_state``,
+    ``jump_target``; murmur publishes ``jump_target`` from the release that
+    added ``murmur jump``). Version numbers are never compared. On success,
+    when some peer is due a fetch, a detached low-priority ``collect`` warms
+    the cache for the next open.
     """
+    global _PENDING_STATUS
     exe = murmur_command()
+    pending, _PENDING_STATUS = _PENDING_STATUS, None
     if exe is None:
         return None, NO_MURMUR
     timeout = float(os.environ.get("TSESH_MURMUR_TIMEOUT", "1"))
     try:
-        result = subprocess.run(
-            [exe, "status", "--json", "--cached"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        proc = pending[0] if pending and pending[1] == exe else _start_status(exe)
+        try:
+            stdout, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return None, SLOW_MURMUR
         data = (
-            json.loads(result.stdout, parse_constant=_reject_constant)
-            if result.returncode == 0
+            json.loads(stdout, parse_constant=_reject_constant)
+            if proc.returncode == 0
             else None
         )
-    except subprocess.TimeoutExpired:
-        return None, SLOW_MURMUR
     except (OSError, ValueError):
         return None, OLD_MURMUR
     if not utf8_clean(data):
@@ -1247,33 +1306,17 @@ def murmur_snapshot() -> tuple[Snapshot | None, str]:
         return None, OLD_MURMUR
     if not isinstance(peers, list) or not all(valid_peer(p) for p in peers):
         return None, OLD_MURMUR
-    with contextlib.suppress(OSError):
-        subprocess.Popen(
-            [exe, "collect", "--quiet", "--floored"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+    if peers_due(peers):
+        with contextlib.suppress(OSError):
+            subprocess.Popen(
+                [exe, "collect", "--quiet", "--floored"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                preexec_fn=_lower_priority,
+            )
     return Snapshot(panes, peers), ""
-
-
-def murmur_can_jump(exe: str) -> bool:
-    """Whether this murmur has a ``jump`` command, by asking for its help.
-
-    Side-effect free (help never reads state) and probed by feature, not by
-    version: an unknown command exits non-zero.
-    """
-    try:
-        probe = subprocess.run(
-            [exe, "jump", "--help"],
-            capture_output=True,
-            timeout=float(os.environ.get("TSESH_MURMUR_TIMEOUT", "1")),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return probe.returncode == 0
 
 
 def named_socket(name: str) -> str | None:
@@ -1402,11 +1445,6 @@ def attached_session(pane_id: str) -> str | None:
     return os.fsdecode(result.stdout).removesuffix("\n") or None
 
 
-def _can_jump() -> bool:
-    exe = murmur_command()
-    return exe is not None and murmur_can_jump(exe)
-
-
 def inside_own_server() -> bool:
     """Whether the invoking client is on the server tsesh's tmux calls reach.
 
@@ -1464,7 +1502,6 @@ def agent_entries(
     """
     counts: dict[str, dict[AgentState, int]] = {}
     rows: list[Entry] = []
-    offer_rows: bool | None = None  # probed lazily, once
     attached_cache: dict[str, str | None] = {}
     for pane in panes:
         state = pane_state(pane)
@@ -1487,10 +1524,6 @@ def agent_entries(
         if str(pane.get("render_state")) in ATTENTION_ROW_STATES and (
             crew or pane.get("visible")
         ):
-            if offer_rows is None:
-                offer_rows = _can_jump()
-            if not offer_rows:
-                continue
             where = f"{session}:{clean_field(pane.get('window_name'))}".strip(":")
             parts = [clean_field(pane.get("host")), where]
             parts.append(age_text(pane.get("updated_at")))
@@ -1587,8 +1620,6 @@ class View:
 
 def agents_view(crew: bool) -> View:
     snapshot, problem = murmur_snapshot()
-    if snapshot is not None and not _can_jump():
-        snapshot, problem = None, OLD_MURMUR
     if snapshot is None:
         status = ansi_style(problem, fg=CATPPUCCIN["peach"])
         return View(
@@ -1621,6 +1652,7 @@ def build_view(
     *,
     crew: bool = False,
 ) -> View:
+    prefetch_murmur(mode)
     if mode == "agents":
         return agents_view(crew)
     config = load_config()
@@ -2041,6 +2073,8 @@ def fzf_env() -> dict[str, str]:
 def run_fzf(
     mode: str, query: str, *, capture: bool
 ) -> subprocess.CompletedProcess[str]:
+    # Only all -> sessions is an automatic switch below: both read murmur.
+    prefetch_murmur(mode)
     if mode == "agents":
         # Works outside tmux and from other terminals: no server is started
         # and no session listed.
@@ -2087,6 +2121,7 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
     still renders interactively while we keep the selection in-process.
     """
     global INVOKING_CLIENT
+    prefetch_murmur(mode)  # node starts while tmux answers
     INVOKING_CLIENT, pane, session = resolve_invoker(client)
     # Read by every build of the picker's rows, reloads included.
     os.environ["TSESH_CURRENT_PANE"] = pane
@@ -2205,18 +2240,26 @@ class TmuxBackend:
         return self.snapshot() or {}
 
     def snapshot(self) -> LiveSessions | None:
-        """Live session -> strongest murmur state in one list-sessions call.
+        """Live session -> strongest murmur state, sessions and windows in one
+        tmux call.
 
         None when no server runs, so a caller can start one and ask again.
         """
         # Two lines per session: its fields, then its path, each keyed by the
-        # session id. Free text (name, path) comes last on its line.
+        # session id; then one line per window, keyed the same way. The two
+        # commands run back to back in the server, so they see one state.
+        # Free text (name, path) comes last on its line.
         result = tmux_cmd(
             "list-sessions",
             "-F",
             "#{session_attached}\t#{session_id}\t#{@murmur_session_state}"
             "\t#{session_activity}\t#{session_name}"
             "\n#{session_id}\tP\t#{session_path}",
+            ";",
+            "list-windows",
+            "-a",
+            "-F",
+            "#{session_id}\tW\t#{window_active}\t#{window_panes}\t#{pane_current_path}",
             check=False,
         )
         if result.returncode != 0:
@@ -2225,9 +2268,14 @@ class TmuxBackend:
         attached: set[str] = set()
         names: dict[str, str] = {}  # id -> name
         paths: dict[str, str] = {}
+        window_line = re.compile(r"(\$[0-9]+)\tW\t([01])\t([0-9]+)\t(.*)")
+        windows: list[re.Match[str]] = []
         for line in result.stdout.splitlines():
             if m := re.fullmatch(r"(\$[0-9]+)\tP\t(.*)", line):
                 paths[m[1]] = m[2]
+                continue
+            if m := window_line.fullmatch(line):
+                windows.append(m)
                 continue
             fields = [*line.split("\t", 4), "", "", "", ""]
             clients, sid, raw, activity, name = fields[:5]
@@ -2240,16 +2288,8 @@ class TmuxBackend:
                     attached.add(name)
         live.attached = frozenset(attached)
         live.paths = {names[sid]: path for sid, path in paths.items() if sid in names}
-        windows = tmux_cmd(
-            "list-windows",
-            "-a",
-            "-F",
-            "#{session_id}\t#{window_active}\t#{window_panes}\t#{pane_current_path}",
-            check=False,
-        )
-        window_line = re.compile(r"(\$[0-9]+)\t([01])\t([0-9]+)\t(.*)")
-        for line in windows.stdout.splitlines() if windows.returncode == 0 else ():
-            if (m := window_line.fullmatch(line)) and m[1] in names:
+        for m in windows:
+            if m[1] in names:
                 window = (m[2] == "1", int(m[3]), m[4])
                 live.windows.setdefault(names[m[1]], []).append(window)
         return live

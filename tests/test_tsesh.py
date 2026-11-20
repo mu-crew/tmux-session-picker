@@ -1527,6 +1527,9 @@ class PickerListsOnce(unittest.TestCase):
         tsesh.fzf("sessions")
         listings = [c for c in calls if c[0] == "list-sessions"]
         self.assertEqual(len(listings), 1, calls)
+        # Sessions and windows come from that one call.
+        self.assertFalse([c for c in calls if c[0] == "list-windows"], calls)
+        self.assertIn("list-windows", listings[0])
 
 
 @support.live("tmux")
@@ -1647,11 +1650,6 @@ if args[:3] == ["status", "--json", "--cached"]:
     sys.stdout.write(open(os.environ["FAKE_MURMUR_JSON"]).read())
     sys.exit(0)
 if args[:1] == ["jump"]:
-    if os.environ.get("FAKE_MURMUR_NOJUMP"):
-        sys.stderr.write("error: unknown command 'jump'\\n")
-        sys.exit(1)
-    if args[1:] == ["--help"]:
-        sys.exit(0)
     sys.exit(int(os.environ.get("FAKE_MURMUR_JUMP_RC", "0")))
 """
 
@@ -1684,10 +1682,37 @@ def agent_pane(**over):
     return pane
 
 
+def peer(**over):
+    return {"name": "peer-a", "needs_session": False, "fetched_at": None, **over}
+
+
+class PeersDue(unittest.TestCase):
+    NOW = 1_000_000_000
+
+    def due(self, *peers):
+        return tsesh.peers_due(list(peers), now_ms=self.NOW)
+
+    def test_no_peers_means_nothing_to_collect(self):
+        self.assertFalse(self.due())
+
+    def test_recently_fetched_peers_are_not_due(self):
+        self.assertFalse(self.due(peer(fetched_at=self.NOW - 5_000)))
+
+    def test_old_never_fetched_or_stale_peers_are_due(self):
+        fresh = peer(fetched_at=self.NOW - 5_000)
+        for other in (
+            peer(fetched_at=self.NOW - tsesh.PEER_FRESH_MS),
+            peer(fetched_at=None),
+            peer(fetched_at=self.NOW, stale=True),
+        ):
+            with self.subTest(other=other):
+                self.assertTrue(self.due(fresh, other))
+
+
 class FakeMurmur(unittest.TestCase):
     """A murmur on PATH-equivalent (TSESH_MURMUR) that records its calls."""
 
-    def install(self, panes, mode="ok"):
+    def install(self, panes, mode="ok", peers=()):
         import json
 
         self.dir = Path(tempfile.mkdtemp())
@@ -1698,7 +1723,7 @@ class FakeMurmur(unittest.TestCase):
         script.write_text(FAKE_MURMUR)
         script.chmod(0o755)
         (self.dir / "status.json").write_text(
-            json.dumps({"counts": {}, "panes": panes, "peers": []})
+            json.dumps({"counts": {}, "panes": panes, "peers": list(peers)})
         )
         env = {
             "TSESH_MURMUR": str(script),
@@ -1729,11 +1754,37 @@ class MurmurProbe(FakeMurmur):
         self.assertIsNone(murmur_panes())  # TSESH_MURMUR is nonexistent
 
     def test_capable_murmur_gives_panes_and_warms_the_cache(self):
-        self.install([agent_pane()])
+        self.install([agent_pane()], peers=[peer(fetched_at=0)])
         panes = murmur_panes()
         self.assertEqual([p["label"] for p in panes], ["agent-a"])
         self.assertIn("status --json --cached", self.calls())
         self.assertTrue(self.wait_for_call("collect --quiet --floored"))
+
+    def test_no_collect_when_no_peer_is_due(self):
+        fresh = peer(fetched_at=time.time() * 1000)
+        for peers in ([], [fresh]):
+            with self.subTest(peers=peers):
+                self.install([agent_pane()], peers=peers)
+                self.assertIsNotNone(murmur_panes())
+                # A collect would be spawned before murmur_snapshot returns.
+                time.sleep(0.5)
+                self.assertFalse(any(c.startswith("collect") for c in self.calls()))
+
+    def test_prefetched_read_is_the_one_used(self):
+        self.install([agent_pane()])
+        tsesh.prefetch_murmur("all")
+        pending = tsesh._PENDING_STATUS
+        self.assertIsNotNone(pending)
+        tsesh.prefetch_murmur("all")  # a second call starts nothing more
+        self.assertIs(tsesh._PENDING_STATUS, pending)
+        self.assertEqual([p["label"] for p in murmur_panes()], ["agent-a"])
+        self.assertIsNone(tsesh._PENDING_STATUS)
+        self.assertEqual(self.calls().count("status --json --cached"), 1)
+
+    def test_views_without_murmur_are_not_prefetched(self):
+        self.install([agent_pane()])
+        tsesh.prefetch_murmur("find")
+        self.assertIsNone(tsesh._PENDING_STATUS)
 
     def test_old_murmur_without_cached_is_ignored(self):
         self.install([agent_pane()], mode="old")
@@ -1875,17 +1926,6 @@ class MurmurRows(FakeMurmur):
     def test_agent_rows_are_not_in_the_sessions_view(self):
         self.install([agent_pane()])
         self.assertFalse([e for e in self.rows("sessions") if e.kind == "agent"])
-
-    def test_murmur_without_jump_offers_no_agent_rows(self):
-        self.install(
-            [agent_pane(pane="%1", render_state="blocked"), agent_pane(pane="%2")]
-        )
-        with unittest.mock.patch.dict(os.environ, {"FAKE_MURMUR_NOJUMP": "1"}):
-            entries = self.rows()
-        self.assertFalse([e for e in entries if e.kind == "agent"])
-        notes = next(e for e in entries if e.name == "notes")
-        self.assertEqual(sum(n for _, n in notes.agent_counts), 2)
-        self.assertFalse([c for c in self.calls() if c.startswith("jump j1:")])
 
     def test_invisible_agents_get_no_row(self):
         self.install([agent_pane(visible=False)])

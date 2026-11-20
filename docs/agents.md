@@ -16,8 +16,10 @@ of a session row, and an idle session shows no state.
 ## Richer view with a current murmur
 
 When the installed murmur supports it, tsesh also reads `murmur status --json
---cached` once per open (cache-only, one second timeout; a detached
-`murmur collect --quiet --floored` warms the cache for the next open). Then:
+--cached` once per open. The read is cache-only, has a one second timeout, and
+runs while tsesh asks tmux. When a peer was last fetched over 20 seconds ago or
+is stale, a detached low-priority `murmur collect --quiet --floored` warms the
+cache for the next open. Then:
 
 - a session row shows how many agents are in each state (`2 working, 1 done`
   as glyph and count) instead of only the strongest state;
@@ -27,7 +29,8 @@ When the installed murmur supports it, tsesh also reads `murmur status --json
   any other agent (another host or server, or a picker outside tmux) goes
   through `murmur jump`.
 
-Agent rows need murmur's `jump` command too. A remote agent counts under the
+Agent rows need murmur's `jump` command, which every murmur that publishes
+`jump_target` has. A remote agent counts under the
 local session that holds its ssh attachment.
 
 ### Safety rules
@@ -38,8 +41,8 @@ the one it talks to (the `TSESH_TMUX_SOCKET_*` variables, else the socket in
 goes through `murmur jump`. A failed jump stays on screen for a moment and
 shows as a tmux message.
 
-tsesh probes for this (`status --json --cached` succeeds with well-formed
-panes, and `jump --help` exits 0); it never compares versions. A malformed
+tsesh probes for this: `status --json --cached` must succeed, with well-formed
+panes that carry `jump_target`. It never compares versions. A malformed
 snapshot is ignored as a whole. With no murmur, or an older one,
 everything works from `@murmur_session_state` as before.
 
