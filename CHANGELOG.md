@@ -5,6 +5,20 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The popup opens on the rows that the last open of the same view left
+  behind, then swaps in a fresh list. The wait for murmur and tmux no longer
+  delays the first paint. If you press Enter before the fresh list arrives,
+  the popup closes and tsesh looks the row up again in a fresh list, so it
+  never acts on stale rows. The cache is kept per view, tmux server, popup
+  width and tsesh version, in `$XDG_STATE_HOME/tsesh/views/`.
+- On a cached open, the picker builds the fresh list itself while fzf shows
+  the cache, and hands it over through fzf's `--listen` socket (a unix socket
+  in the picker's private temporary directory). The tmux call that finds the
+  invoking pane now runs after fzf starts. A view key or `ctrl-x` pressed
+  before the handover keeps its own list.
+
 ## [1.0.1] - 2026-11-20
 
 ### Changed

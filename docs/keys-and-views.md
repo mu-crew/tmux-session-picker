@@ -38,6 +38,19 @@ The first column marks where you are: `◆` is the session (and, in the agents
 view, the agent pane) of the client that opened the picker, and `◇` is a
 session another client has attached.
 
+## Opening from the cache
+
+The popup first shows the rows that the last open of the same view left
+behind, then replaces them with a fresh list as soon as it is ready. The fresh
+list is usually ready within a few hundred milliseconds, or as soon as murmur
+answers. It keeps your query, and you can type and move at once. A view key or
+`ctrl-x` pressed before it arrives keeps the list it asked for. If you press Enter before the fresh list
+arrives, the popup closes and tsesh looks the row up again in a fresh list: it
+acts on the row as it is now, or says the row is gone. The cache lives in
+`$XDG_STATE_HOME/tsesh/views/` (`~/.local/state/tsesh/views/`). There is one
+file per view, tmux server, popup width and tsesh version. A first open, or an
+open at a new width, lists fresh rows as before.
+
 ## Command line
 
 `bin/tsesh` also works on its own, outside a popup: `tsesh pick-and-connect`.

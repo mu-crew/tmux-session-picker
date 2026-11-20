@@ -313,6 +313,106 @@ class CurrentMarker(Harness):
         self.assertEqual(rows["other"][0], " ")
 
 
+class CachedOpen(Harness):
+    """An open shows the last open's rows at once, then the fresh list."""
+
+    def names(self, rows):
+        return [r.split("\t")[2] for r in rows]
+
+    def open_sessions(self, **kw):
+        out = self.tsesh("pick-and-connect", "--mode", "sessions", **kw)
+        self.assertEqual(out.stderr, "")
+        return self.steps()[0]
+
+    def test_first_open_lists_fresh_rows_and_caches_them(self):
+        start = self.open_sessions(**self.in_tmux())
+        self.assertEqual(start["input"], start["rows"])
+        self.assertIn("notes", self.names(start["rows"]))
+        self.assertEqual(
+            len(list((self.tmp / "state" / "tsesh" / "views").iterdir())), 1
+        )
+
+    def test_next_open_starts_on_the_cache_then_refreshes(self):
+        self.open_sessions(**self.in_tmux())
+        self.tmux("new-session", "-d", "-s", "later")
+        start = self.open_sessions(**self.in_tmux())
+        self.assertNotIn("later", self.names(start["input"]))
+        self.assertIn("later", self.names(start["rows"]))
+        # The fresh list is cached in turn.
+        self.assertIn(
+            "later", self.names(self.open_sessions(**self.in_tmux())["input"])
+        )
+
+    def test_cached_open_reads_murmur_once(self):
+        self.snapshot([self.own()])
+        for _ in range(2):  # the second open is the cached one
+            self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
+        self.assertNotEqual(self.steps()[0]["input"], [])
+        calls = self.murmur_calls()
+        self.assertEqual(calls.count("status --json --cached"), 1, calls)
+
+    def test_cache_is_per_width(self):
+        self.open_sessions(COLUMNS="120", **self.in_tmux())
+        start = self.open_sessions(COLUMNS="200", **self.in_tmux())
+        self.assertEqual(start["input"], start["rows"])
+
+    def test_unreadable_cache_falls_back_to_a_fresh_list(self):
+        self.open_sessions(**self.in_tmux())
+        for cache in (self.tmp / "state" / "tsesh" / "views").iterdir():
+            cache.write_text("{not json")
+        self.tmux("new-session", "-d", "-s", "later")
+        start = self.open_sessions(**self.in_tmux())
+        self.assertIn("later", self.names(start["input"]))
+
+    def test_cached_open_still_marks_the_current_session(self):
+        client = self.attach("notes")
+        args = ("--client", client)
+        for _ in range(2):  # the second open is the cached one
+            out = self.tsesh(
+                "pick-and-connect", "--mode", "sessions", *args, **self.in_tmux()
+            )
+            self.assertEqual(out.stderr, "")
+        start = self.steps()[0]
+        self.assertNotEqual(start["input"], [])
+        rows = {r.split("\t")[2]: plain(r.split("\t")[0]) for r in start["rows"]}
+        self.assertEqual(rows["notes"][0], "\u25c6")
+
+    def test_enter_on_a_cached_row_acts_on_its_fresh_state(self):
+        remote = {"local": False, "host": "peer-a"}
+        self.snapshot([agent_pane(jump_target="j1:old", **remote)])
+        self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
+        self.snapshot([agent_pane(jump_target="j2:new", **remote)])
+        out = self.tsesh(
+            "pick-and-connect",
+            "--mode",
+            "agents",
+            pick="agent-a",
+            FZF_SHIM_EARLY="1",
+            **self.in_tmux(),
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("j1:old", self.steps()[0]["input"][0])  # picked from cache
+        calls = self.murmur_calls()
+        self.assertIn("jump j2:new", calls)
+        self.assertNotIn("jump j1:old", calls)
+
+    def test_enter_on_a_cached_row_that_is_gone_does_nothing(self):
+        self.snapshot([agent_pane(local=False, host="peer-a")])
+        self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
+        self.snapshot([])
+        out = self.tsesh(
+            "pick-and-connect",
+            "--mode",
+            "agents",
+            pick="agent-a",
+            FZF_SHIM_EARLY="1",
+            **self.in_tmux(),
+        )
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("gone since the picker opened", out.stderr)
+        self.assertFalse([c for c in self.murmur_calls() if c.startswith("jump")])
+
+
 class EmptyState(Harness):
     def test_no_agents_says_so_and_stays_open(self):
         out = self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())

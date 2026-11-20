@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import enum
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1456,13 +1458,21 @@ def inside_own_server() -> bool:
 
 
 def current_location() -> tuple[str, str]:
-    """(pane id, session name) of the invoking client, resolved before fzf
-    starts (see resolve_invoker) and handed to reloads through the environment.
+    """(pane id, session name) of the invoking client: resolved before fzf
+    starts (see resolve_invoker) and handed to reloads through the environment,
+    or, on a cached open, found after fzf started and left in the picker's
+    directory (see build_fresh).
     """
-    return (
-        os.environ.get("TSESH_CURRENT_PANE", ""),
-        os.environ.get("TSESH_CURRENT_SESSION", ""),
-    )
+    if "TSESH_CURRENT_PANE" in os.environ:
+        return (
+            os.environ.get("TSESH_CURRENT_PANE", ""),
+            os.environ.get("TSESH_CURRENT_SESSION", ""),
+        )
+    if directory := picker_dir():
+        with contextlib.suppress(OSError):
+            pane, _, session = (directory / "invoker").read_text().partition("\t")
+            return pane, session
+    return "", ""
 
 
 def pane_state(pane: dict) -> AgentState:
@@ -1931,16 +1941,173 @@ PICKER_DIR_ENV = "TSESH_PICKER_DIR"
 
 def write_view_files(directory: str, view: View) -> None:
     for name, text in (("header", view.header), ("prompt", view.prompt)):
-        tmp = Path(directory, f".{name}.{os.getpid()}")
-        tmp.write_text(text)
-        tmp.replace(Path(directory, name))
+        write_atomic(Path(directory, name), text)
+
+
+def write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}")
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+# The optimistic open. pick-and-connect starts fzf on the rows the last open of
+# the same view left in a cache, builds the fresh view itself meanwhile (Python
+# is already running), and hands it to fzf over fzf's --listen socket. Files in
+# the picker's directory carry the handover:
+#   rows      the fresh rows, for the posted `reload(cat rows)`
+#   switched  a view key or kill ran first: leave fzf's own reload alone
+#   invoker   "pane<TAB>session" of the invoking client, for later reloads,
+#             when pick-and-connect found it only after fzf started
+# fzf keeps the cursor's index, not its row, across a reload (and --track
+# would drop keys while one runs), so an Enter on a cached row is looked up
+# again in the fresh build before tsesh acts on it.
+
+
+@dataclass(frozen=True)
+class CachedView:
+    mode: str  # the view the rows show (all may have opened as sessions)
+    header: str
+    prompt: str
+    rows: list[str]
+
+
+def view_cache_path(mode: str) -> Path:
+    """The cache for opening MODE: one per tsesh version, tmux server and list
+    width, since rows are laid out for one width and proven for one server."""
+    key = json.dumps([VERSION, mode, own_socket() or "", LAYOUT.columns])
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return STATE_DIR / "views" / f"{mode}-{digest}.json"
+
+
+def read_view_cache(path: Path) -> CachedView | None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not is_object(data) or data.get("version") != VERSION:
+        return None
+    mode, header, prompt, rows = (
+        data.get(k) for k in ("mode", "header", "prompt", "rows")
+    )
+    if mode not in MODES or not (_is_str(header) and _is_str(prompt)):
+        return None
+    fields = len(FZF_ROW_FIELDS)
+    if not isinstance(rows, list) or not all(
+        _is_str(r) and "\n" not in r and r.count("\t") == fields - 1 for r in rows
+    ):
+        return None
+    return CachedView(str(mode), str(header), str(prompt), [str(r) for r in rows])
+
+
+def write_view_cache(path: Path, mode: str, view: View, rows: list[str]) -> None:
+    doc = {
+        "version": VERSION,
+        "mode": mode,
+        "header": view.header,
+        "prompt": view.prompt,
+        "rows": rows,
+    }
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(path, json.dumps(doc))
+
+
+def picker_dir() -> Path | None:
+    directory = os.environ.get(PICKER_DIR_ENV)
+    return Path(directory) if directory else None
+
+
+def mark_switched() -> None:
+    """The picker's own reload now owns the list (see the comment above)."""
+    if directory := picker_dir():
+        with contextlib.suppress(OSError):
+            (directory / "switched").touch()
+
+
+@dataclass(frozen=True)
+class Fresh:
+    """The rows of the fresh view a cached open built while fzf showed the
+    cache."""
+
+    rows: list[str]
+
+    def choice(self, row: str) -> EntryPayload | None:
+        """ROW as it is now: itself when fresh, else the fresh row with the
+        same identity, or None when that row is gone."""
+        if row in self.rows:
+            return EntryPayload.from_fzf_row(row)
+        wanted = row_identity(EntryPayload.from_fzf_row(row))
+        for fresh_row in self.rows:
+            payload = EntryPayload.from_fzf_row(fresh_row)
+            if row_identity(payload) == wanted:
+                return payload
+        return None
+
+
+def row_identity(payload: EntryPayload) -> tuple[str, ...]:
+    """What makes two picker rows the same row, whatever their state."""
+    return (
+        payload.kind,
+        payload.session_name,
+        payload.path or "",
+        payload.host,
+        payload.pane,
+    )
+
+
+def build_fresh(
+    mode: str, directory: Path, cache_path: Path | None, client: str | None
+) -> Fresh:
+    """The opening view of MODE, built while fzf shows the cache: in the
+    picker's directory for fzf, and in the cache for the next open. CLIENT:
+    the invoking client whose pane is still to be found."""
+    prefetch_murmur(mode)
+    if client is not None:
+        _, pane, session = resolve_invoker(client)
+        os.environ["TSESH_CURRENT_PANE"] = pane
+        os.environ["TSESH_CURRENT_SESSION"] = session
+        with contextlib.suppress(OSError):
+            write_atomic(directory / "invoker", f"{pane}\t{session}")
+    live: Mapping[str, AgentState | None] | None = None
+    if mode != "agents":
+        live = backend().live_sessions()
+        mode = effective_initial_mode(mode, live)
+    view = build_view(mode, live)
+    rows = [entry.to_fzf_row() for entry in view.entries]
+    write_view_files(str(directory), view)
+    write_atomic(directory / "rows", "".join(f"{row}\n" for row in rows))
+    if cache_path is not None:
+        write_view_cache(cache_path, mode, view, rows)
+    return Fresh(rows)
+
+
+def fzf_post(sock: Path, action: str, proc: subprocess.Popen[str]) -> None:
+    """Send ACTION to the fzf listening on SOCK; quietly give up when fzf has
+    exited or never opens its socket."""
+    body = action.encode()
+    request = (
+        b"POST / HTTP/1.1\r\nHost: localhost\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode()
+        + body
+    )
+    deadline = time.monotonic() + 2
+    while proc.poll() is None and time.monotonic() < deadline:
+        try:
+            with socket.socket(socket.AF_UNIX) as conn:
+                conn.settimeout(1)
+                conn.connect(str(sock))
+                conn.sendall(request)
+                conn.recv(64)
+            return
+        except OSError:
+            time.sleep(0.01)
 
 
 def print_entries(mode: str, crew: bool = False) -> int:
     view = build_view(mode, crew=crew)
-    if directory := os.environ.get(PICKER_DIR_ENV):
+    if directory := picker_dir():
         with contextlib.suppress(OSError):
-            write_view_files(directory, view)
+            write_view_files(str(directory), view)
     for entry in view.entries:
         print(entry.to_fzf_row())
     return 0
@@ -1953,6 +2120,7 @@ def fzf_action(target: str) -> int:
     The state comes from $FZF_PROMPT (see prompt_text), never from a value
     fixed when the bindings were built.
     """
+    mark_switched()
     mode, crew = prompt_state(os.environ.get("FZF_PROMPT", ""))
     if target == "agents" and mode == "agents":
         crew = not crew
@@ -1993,6 +2161,7 @@ def _fzf_command(
     header: str | None = None,
     prompt: str | None = None,
     state_dir: str = "",
+    listen: str = "",
 ) -> list[str]:
     self_cmd = sh_quote(sys.argv[0])
     cmd = [
@@ -2061,6 +2230,10 @@ def _fzf_command(
         cmd.append("--exact")
     if query:
         cmd.extend(["--query", query])
+    if listen:
+        # A unix socket in the picker's private directory: only this user
+        # can reach it.
+        cmd.append(f"--listen={listen}")
     return cmd
 
 
@@ -2071,23 +2244,74 @@ def fzf_env() -> dict[str, str]:
 
 
 def run_fzf(
-    mode: str, query: str, *, capture: bool
-) -> subprocess.CompletedProcess[str]:
-    # Only all -> sessions is an automatic switch below: both read murmur.
-    prefetch_murmur(mode)
-    if mode == "agents":
-        # Works outside tmux and from other terminals: no server is started
-        # and no session listed.
-        live: Mapping[str, AgentState | None] = {}
-    else:
-        live = backend().snapshot()
-        if live is None:
-            backend().ensure_server()
-            live = backend().live_sessions()
-        mode = effective_initial_mode(mode, live)
-    view = build_view(mode, live)
-    entries = "\n".join(entry.to_fzf_row() for entry in view.entries)
+    mode: str,
+    query: str,
+    *,
+    capture: bool,
+    cached: CachedView | None = None,
+    cache_path: Path | None = None,
+    client: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Fresh | None]:
+    """Run the picker on MODE. CACHE_PATH: where to keep this open's rows.
+
+    With CACHED, fzf starts on its rows while the fresh view is built here and
+    then handed over (see the optimistic-open comment); CLIENT is the invoking
+    client whose pane is still to be found. Returns fzf's result, and for a
+    cached open the fresh view, to check the choice against.
+    """
+    if cached is None:
+        # Only all -> sessions is an automatic switch below: both read murmur.
+        prefetch_murmur(mode)
     with tempfile.TemporaryDirectory(prefix="tsesh-") as state_dir:
+        directory = Path(state_dir)
+        env = {**fzf_env(), PICKER_DIR_ENV: state_dir}
+        if cached is not None:
+            write_view_files(state_dir, View([], cached.header, cached.prompt))
+            given = directory / "cached"
+            given.write_text("".join(f"{row}\n" for row in cached.rows))
+            sock = directory / "fzf.sock"
+            cmd = _fzf_command(
+                cached.mode,
+                query=query,
+                header=cached.header,
+                prompt=cached.prompt,
+                state_dir=state_dir,
+                listen=str(sock),
+            )
+            with given.open() as rows_in:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=rows_in,
+                    stdout=subprocess.PIPE if capture else None,
+                    text=True,
+                    env=env,
+                )
+            try:
+                fresh = build_fresh(mode, directory, cache_path, client)
+                if not (directory / "switched").exists():
+                    rows_file = sh_quote(str(directory / "rows"))
+                    fzf_post(sock, f"reload(cat {rows_file})", proc)
+                out, _ = proc.communicate()
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            done = subprocess.CompletedProcess(cmd, proc.returncode, out or "", "")
+            return done, fresh
+        if mode == "agents":
+            # Works outside tmux and from other terminals: no server is
+            # started and no session listed.
+            live: Mapping[str, AgentState | None] = {}
+        else:
+            live = backend().snapshot()
+            if live is None:
+                backend().ensure_server()
+                live = backend().live_sessions()
+            mode = effective_initial_mode(mode, live)
+        view = build_view(mode, live)
+        rows = [entry.to_fzf_row() for entry in view.entries]
+        if cache_path is not None:
+            write_view_cache(cache_path, mode, view, rows)
         write_view_files(state_dir, view)
         cmd = _fzf_command(
             mode,
@@ -2096,14 +2320,15 @@ def run_fzf(
             prompt=view.prompt,
             state_dir=state_dir,
         )
-        return subprocess.run(
+        proc = subprocess.run(
             cmd,
-            input=entries,
+            input="\n".join(rows),
             text=True,
             capture_output=capture,
             check=False,
-            env={**fzf_env(), PICKER_DIR_ENV: state_dir},
+            env=env,
         )
+        return proc, None
 
 
 # fzf's exit codes for "no selection": no match (1) and aborted (130).
@@ -2111,7 +2336,7 @@ FZF_NOTHING_CHOSEN = {1, 130}
 
 
 def fzf(mode: str = "all", query: str = "") -> int:
-    return run_fzf(mode, query, capture=False).returncode
+    return run_fzf(mode, query, capture=False)[0].returncode
 
 
 def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> int:
@@ -2121,12 +2346,31 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
     still renders interactively while we keep the selection in-process.
     """
     global INVOKING_CLIENT
-    prefetch_murmur(mode)  # node starts while tmux answers
-    INVOKING_CLIENT, pane, session = resolve_invoker(client)
-    # Read by every build of the picker's rows, reloads included.
-    os.environ["TSESH_CURRENT_PANE"] = pane
-    os.environ["TSESH_CURRENT_SESSION"] = session
-    proc = run_fzf(mode, query, capture=True)
+    cache_path = view_cache_path(mode)
+    # A cached open lists nothing before fzf, so it cannot start a server
+    # first (ensure_server); only an agents view or a running server has one.
+    usable = mode == "agents" or PINNED_SOCKET is not None
+    cached = read_view_cache(cache_path) if usable else None
+    if cached is None:
+        prefetch_murmur(mode)  # node starts while tmux answers
+    deferred: str | None = None
+    if cached is not None and valid_client_name(client):
+        # The client is all the bindings need now; its pane is found while
+        # fzf already shows the cache, off the path to the first paint.
+        INVOKING_CLIENT = deferred = client
+    else:
+        INVOKING_CLIENT, pane, session = resolve_invoker(client)
+        # Read by every build of the picker's rows, reloads included.
+        os.environ["TSESH_CURRENT_PANE"] = pane
+        os.environ["TSESH_CURRENT_SESSION"] = session
+    proc, fresh = run_fzf(
+        mode,
+        query,
+        capture=True,
+        cached=cached,
+        cache_path=cache_path,
+        client=deferred,
+    )
     if proc.returncode in FZF_NOTHING_CHOSEN:
         # esc, ctrl-c, or enter with no match: a clean exit. run-shell would
         # otherwise print "returned 130" over the pane once the popup closes.
@@ -2141,6 +2385,14 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
     if not choice:
         return 1
     payload = EntryPayload.from_fzf_row(choice)
+    if fresh is not None:
+        # Maybe picked from the cached rows: act on the row as it is now.
+        found = fresh.choice(choice)
+        if found is None:
+            name = payload.session_name or payload.path or "that row"
+            report_failure(f"{name}: gone since the picker opened")
+            return 1
+        payload = found
     if payload.kind == "agent":
         return connect_agent(payload)
     return connect_resolved(
@@ -2534,6 +2786,7 @@ def kill(kind: str, session_id: str, client: str = "") -> int:
     """
     if kind not in ("default", "tmux") or not re.fullmatch(r"\$[0-9]+", session_id):
         return 0
+    mark_switched()  # its reload follows; the handover must not undo it
     listed = tmux_bytes("list-sessions", "-F", "#{session_id}\t#{session_name}")
     names = dict(
         line.partition("\t")[::2] for line in os.fsdecode(listed.stdout).splitlines()
@@ -2592,13 +2845,18 @@ MODES = ["all", "sessions", "find", "agents"]
 INVOKING_CLIENT: str | None = None
 
 
+def valid_client_name(name: str) -> bool:
+    """A tty path or "client-N": safe as a -t/-c target, nothing to split."""
+    return bool(name) and re.fullmatch(r"[A-Za-z0-9_./:@-]+", name) is not None
+
+
 def resolve_invoker(given: str = "") -> tuple[str | None, str, str]:
     """(client, pane id, session name) of whoever opened the picker, with one
     ``display-message`` before fzf starts. The client is the one the key
     binding named, else (in tmux) the one tmux reports now. The pane and
     session are read only from a client of tsesh's own server; in a popup
     $TMUX_PANE is unset, so they come from the client itself."""
-    client = given if given and re.fullmatch(r"[A-Za-z0-9_./:@-]+", given) else None
+    client = given if valid_client_name(given) else None
     inside = inside_own_server()
     if client and not inside:
         return client, "", ""

@@ -6,6 +6,7 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
+import json
 import os
 import re
 import shutil
@@ -1686,6 +1687,87 @@ def peer(**over):
     return {"name": "peer-a", "needs_session": False, "fetched_at": None, **over}
 
 
+class ViewCache(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "views" / "all.json"
+        self.addCleanup(shutil.rmtree, self.path.parent.parent, True)
+        self.row = "\t".join(["text", "tmux", "notes"] + [""] * 9)
+        view = tsesh.View([], "head", "prompt> ")
+        tsesh.write_view_cache(self.path, "sessions", view, [self.row])
+
+    def doc(self):
+        return json.loads(self.path.read_text())
+
+    def test_round_trip(self):
+        cached = tsesh.read_view_cache(self.path)
+        self.assertEqual(
+            cached, tsesh.CachedView("sessions", "head", "prompt> ", [self.row])
+        )
+
+    def test_rejected(self):
+        for change in (
+            {"version": "0.0.1"},  # rows laid out by another tsesh
+            {"mode": "bogus"},
+            {"header": 3},
+            {"rows": ["too\tfew"]},
+            {"rows": [self.row + "\nsecond line"]},
+        ):
+            with self.subTest(change=change):
+                self.path.write_text(json.dumps({**self.doc(), **change}))
+                self.assertIsNone(tsesh.read_view_cache(self.path))
+        self.path.unlink()
+        self.assertIsNone(tsesh.read_view_cache(self.path))
+
+
+class CachedHandover(unittest.TestCase):
+    """A view key or kill that lands before the fresh rows keeps its list."""
+
+    def cached_open(self, *, switch_first):
+        posted = []
+
+        def build_fresh(mode, directory, cache_path, client):
+            if switch_first:
+                (directory / "switched").touch()
+            return tsesh.Fresh([])
+
+        for owner, attr, value in (
+            (tsesh, "build_fresh", build_fresh),
+            (tsesh, "fzf_post", lambda sock, action, proc: posted.append(action)),
+            (tsesh, "_fzf_command", lambda mode, query="", **kw: ["true"]),
+        ):
+            self.addCleanup(setattr, owner, attr, getattr(owner, attr))
+            setattr(owner, attr, value)
+        cached = tsesh.CachedView("sessions", "head", "prompt> ", [])
+        tsesh.run_fzf("sessions", "", capture=True, cached=cached)
+        return posted
+
+    def test_fresh_rows_are_posted(self):
+        self.assertEqual(len(self.cached_open(switch_first=False)), 1)
+
+    def test_a_switch_first_keeps_its_list(self):
+        self.assertEqual(self.cached_open(switch_first=True), [])
+
+    def test_view_keys_and_kill_mark_the_switch(self):
+        actions = (
+            lambda: tsesh.fzf_action("sessions"),
+            lambda: tsesh.kill("tmux", "$999999"),
+        )
+        for action in actions:
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as d:
+                env = {tsesh.PICKER_DIR_ENV: d, "FZF_PROMPT": ""}
+                with (
+                    unittest.mock.patch.dict(os.environ, env),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    unittest.mock.patch.object(
+                        tsesh,
+                        "tmux_bytes",
+                        lambda *a: subprocess.CompletedProcess(a, 1, b"", b""),
+                    ),
+                ):
+                    action()
+                self.assertTrue(Path(d, "switched").exists())
+
+
 class PeersDue(unittest.TestCase):
     NOW = 1_000_000_000
 
@@ -2252,8 +2334,9 @@ class AmbientServer(FakeMurmur):
 class AgentEnter(FakeMurmur):
     def pick(self, entry, **kw):
         old = tsesh.run_fzf
-        tsesh.run_fzf = lambda mode, query, *, capture: subprocess.CompletedProcess(
-            [], 0, stdout=entry.to_fzf_row() + "\n"
+        tsesh.run_fzf = lambda mode, query, **_: (
+            subprocess.CompletedProcess([], 0, stdout=entry.to_fzf_row() + "\n"),
+            None,
         )
         self.addCleanup(setattr, tsesh, "run_fzf", old)
         return tsesh.pick_and_connect(**kw)
