@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-20
+
 ### Changed
 
 - The popup opens on the rows that the last open of the same view left
