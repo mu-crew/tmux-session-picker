@@ -5,6 +5,14 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Enter on a row reached through a view key failed with "gone since the
+  picker opened". This hit crew agents (mu delegates) after `ctrl-g`, and rows
+  of another view after `ctrl-s` or `ctrl-f`. 1.0.2 checked every choice
+  against the opening view, which lacks those rows. Only a choice from the
+  cached rows is checked now. Rows from a reload are fresh already.
+
 ## [1.0.2] - 2026-11-20
 
 ### Changed

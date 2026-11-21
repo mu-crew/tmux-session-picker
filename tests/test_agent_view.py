@@ -396,6 +396,25 @@ class CachedOpen(Harness):
         self.assertIn("jump j2:new", calls)
         self.assertNotIn("jump j1:old", calls)
 
+    def test_enter_on_a_row_from_a_view_switch_acts_on_it(self):
+        # Crew agents (mu delegates) appear only after ctrl-g: a reload the
+        # opening view never had. Those rows are fresh and must be used.
+        crew = agent_pane(label="delegate-x", local=False, host="peer-a", visible=False)
+        crew["jump_target"] = "j3:crew"
+        self.snapshot([crew])
+        self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
+        out = self.tsesh(
+            "pick-and-connect",
+            "--mode",
+            "agents",
+            keys="ctrl-g",
+            pick="delegate-x",
+            **self.in_tmux(),
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotEqual(self.steps()[0]["input"], self.steps()[-1]["rows"])
+        self.assertIn("jump j3:crew", self.murmur_calls())
+
     def test_enter_on_a_cached_row_that_is_gone_does_nothing(self):
         self.snapshot([agent_pane(local=False, host="peer-a")])
         self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())

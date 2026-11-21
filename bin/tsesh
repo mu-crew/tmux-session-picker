@@ -2385,8 +2385,10 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
     if not choice:
         return 1
     payload = EntryPayload.from_fzf_row(choice)
-    if fresh is not None:
-        # Maybe picked from the cached rows: act on the row as it is now.
+    if fresh is not None and cached is not None and choice in cached.rows:
+        # Picked from the cached rows: act on the row as it is now. A row
+        # they never had (a view key, ctrl-g's crew agents) came from a
+        # reload and is fresh already; the opening view may not hold it.
         found = fresh.choice(choice)
         if found is None:
             name = payload.session_name or payload.path or "that row"
