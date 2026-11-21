@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-21
+
 ### Fixed
 
 - Enter on a row reached through a view key failed with "gone since the
