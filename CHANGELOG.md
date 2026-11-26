@@ -5,6 +5,21 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-26
+
+### Changed
+
+- **Native vtmux OSC 7501 session and window state.** `tsesh` now reads
+  `#{session_program_state}` in `list-sessions -F` and `#{window_program_state}`
+  in the session preview instead of `@murmur_session_state` / `@murmur_window_state`
+  (requires vtmux >= 3.8-rc3 with `set -s vtmux-program-status on`). On vanilla
+  tmux 3.8, native session state is blank while the picker, zoxide, root-dir,
+  kill and last-session continue to work; stay on murmur 2.x (`release/2.x`) if
+  you need local state on stock tmux.
+- Session state merge with cached murmur snapshots now orders
+  `crashed > blocked > error > working > waiting > done > idle` so native
+  `blocked` is never downgraded by a cached snapshot.
+
 ## [1.0.3] - 2026-11-21
 
 ### Fixed
