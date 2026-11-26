@@ -48,13 +48,16 @@ class AgentState(enum.IntEnum):
 
     @classmethod
     def parse(cls, raw: str) -> AgentState | None:
-        try:
-            state = cls[raw]
-        except KeyError:
+        if raw not in OSC_7501_STATES:
             return None
+        state = cls[raw]
         # An idle session shows no state, as before; only counts mention idle.
         return None if state is cls.idle else state
 
+
+# The only values #{session_program_state} may carry; murmur-only waiting and
+# crashed are not among them.
+OSC_7501_STATES = frozenset({"blocked", "error", "working", "done", "idle"})
 
 # THEME BEGIN: tsesh-state-glyphs
 # Nerd Font glyphs, the same shapes murmur's dash uses per state.
@@ -1652,6 +1655,22 @@ def agents_view(crew: bool) -> View:
     return View(rows, header, prompt_text("agents", crew, counts))
 
 
+_MERGE_ORDER = (
+    AgentState.idle,
+    AgentState.done,
+    AgentState.waiting,
+    AgentState.working,
+    AgentState.error,
+    AgentState.blocked,
+    AgentState.crashed,
+)
+
+
+def merge_rank(state: AgentState) -> int:
+    """Urgency when merging native and murmur states: blocked outranks error."""
+    return _MERGE_ORDER.index(state)
+
+
 def build_entries(
     mode: str, live: Mapping[str, AgentState | None] | None = None
 ) -> list[Entry]:
@@ -1689,9 +1708,9 @@ def build_view(
             active = [st for st in per if st is not AgentState.idle]
             if not active:
                 continue  # idle agents never colour a row
-            strongest = max(active)
+            strongest = max(active, key=merge_rank)
             current = states.get(name)
-            if current is None or current < strongest:
+            if current is None or merge_rank(current) < merge_rank(strongest):
                 states[name] = strongest
         if mode == "all":
             entries.extend(agent_rows)

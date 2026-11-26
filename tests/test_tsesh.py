@@ -150,7 +150,7 @@ class RowRendering(unittest.TestCase):
             self.assertGreater(uses, 0, key)
 
     def test_murmur_states_parse_and_order(self):
-        for raw in ("crashed", "error", "blocked", "done", "working", "waiting"):
+        for raw in ("error", "blocked", "done", "working"):
             self.assertIsNotNone(State.parse(raw), raw)
         self.assertGreater(State.crashed, State.error)
         self.assertGreater(State.error, State.blocked)
@@ -806,6 +806,10 @@ class LiveTmux(unittest.TestCase):
             self.assertEqual(tsesh.AgentState.parse(raw), State[raw])
         self.assertIsNone(tsesh.AgentState.parse("idle"))
         self.assertIsNone(tsesh.AgentState.parse(""))
+
+    def test_parser_rejects_murmur_only_and_bogus_states(self):
+        for raw in ("crashed", "waiting", "bogus", "Blocked", " blocked"):
+            self.assertIsNone(tsesh.AgentState.parse(raw), raw)
 
     def sessions(self):
         return sorted(tsesh.TmuxBackend().live_sessions())
@@ -2021,6 +2025,20 @@ class MurmurRows(FakeMurmur):
         self.assertEqual([e.name for e in agents], ["first", "second"])
         self.assertEqual([e.kind for e in entries[:2]], ["agent", "agent"])
         self.assertEqual(agents[0].worst_state, State.crashed)
+
+    def test_snapshot_error_does_not_override_native_blocked(self):
+        self.install([agent_pane(render_state="error")])
+        live = tsesh.LiveSessions()
+        live["notes"] = State.blocked
+        by_name = {e.name: e for e in tsesh.build_entries("sessions", live)}
+        self.assertEqual(by_name["notes"].worst_state, State.blocked)
+
+    def test_snapshot_crashed_still_overrides_native_blocked(self):
+        self.install([agent_pane(render_state="crashed")])
+        live = tsesh.LiveSessions()
+        live["notes"] = State.blocked
+        by_name = {e.name: e for e in tsesh.build_entries("sessions", live)}
+        self.assertEqual(by_name["notes"].worst_state, State.crashed)
 
     def test_agent_rows_are_not_in_the_sessions_view(self):
         self.install([agent_pane()])
