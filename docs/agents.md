@@ -1,16 +1,18 @@
 # Agents (murmur integration)
 
-If [murmur](https://github.com/mu-crew/murmur) runs on the machine, each
-session also shows its coding agents' state: crashed, error, blocked, done,
-working or waiting. Without murmur that column is blank and everything else works.
+On **vtmux >= 3.8-rc3** (`vtmux-program-status on`), each session row shows its
+coding agents' state natively via `#{session_program_state}` even without
+murmur. Adding [murmur](https://github.com/mu-crew/murmur) adds per-state
+breakdowns, `crashed` / `waiting`, remote peers, and `prefix a`.
 
 ## Vanilla tmux 3.8
 
 Stock tmux 3.8 drops OSC 7501 and OSC 7577 and has no `#{*_program_state}`
-formats. There the picker, zoxide, root-dir, kill and last-session work, the
-session state column is blank, and local agents do not show in `prefix a`
-(murmur 3.0 sees no local panes; remote peers on vtmux or Rex still do, and
-jump works). murmur 2.x (branch `release/2.x`) is the clean out; otherwise use
+formats. There the picker, zoxide, root-dir, kill and last-session work, native
+session state is blank (a session only shows state if a remote murmur snapshot
+attaches through it), and untagged local panes do not show in `prefix a`
+(remote peers on vtmux or Rex still appear; jump works to remote tmux/vtmux
+panes). murmur 2.x (branch `release/2.x`) is the clean out; otherwise use
 vtmux >= 3.8-rc3 with `set -s vtmux-program-status on`.
 
 ## Agent state
