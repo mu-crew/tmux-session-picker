@@ -6,12 +6,12 @@ working or waiting. Without murmur that column is blank and everything else work
 
 ## Agent state
 
-tsesh reads one tmux option per session, `@murmur_session_state`, in a single
-`list-sessions` call. murmur keeps it at the strongest state among the
-session's agents. Any tool can set it; the values are `crashed`, `error`,
-`blocked`, `done`, `working` and `waiting`. murmur also reports `idle` (a
-stopped agent with nothing pending); tsesh only counts those in the breakdown
-of a session row, and an idle session shows no state.
+tsesh reads vtmux's native `#{session_program_state}` per session, in a single
+`list-sessions` call. vtmux rolls the OSC 7501 states of the session's panes
+up to the strongest: `blocked`, `error`, `working`, `done` or `idle`. Empty
+(plain tmux, or no pane reports) means no state. An idle session shows no
+state; tsesh only counts idle agents in the breakdown of a session row.
+`waiting` and `crashed` come from murmur's snapshot only.
 
 ## Richer view with a current murmur
 
@@ -44,7 +44,7 @@ shows as a tmux message.
 tsesh probes for this: `status --json --cached` must succeed, with well-formed
 panes that carry `jump_target`. It never compares versions. A malformed
 snapshot is ignored as a whole. With no murmur, or an older one,
-everything works from `@murmur_session_state` as before.
+everything works from `#{session_program_state}`.
 
 ## Agents view
 

@@ -40,6 +40,7 @@ class Harness(unittest.TestCase):
             f'#!/bin/sh\nexec {sys.executable} {ROOT / "tests" / "fzf_shim.py"} "$@"\n'
         )
         shim.chmod(0o755)
+        support.program_state_tmux(str(bindir))
         self.murmur = self.tmp / "murmur"
         self.murmur.write_text(FAKE_MURMUR)
         self.murmur.chmod(0o755)
@@ -534,7 +535,7 @@ class MurmurUnavailable(Harness):
                 self.assertIn("murmur too old", self.header())
 
     def test_unencodable_strings_reject_the_whole_snapshot(self):
-        self.tmux("set-option", "-t", "notes", "@murmur_session_state", "blocked")
+        self.tmux("set-option", "-t", "notes", "@test_program_state", "blocked")
         lone = "bad\ud800"  # a lone surrogate: valid JSON, not valid UTF-8
         cases = (
             [self.own(render_state="done"), self.own(label=lone)],
@@ -550,7 +551,7 @@ class MurmurUnavailable(Harness):
                 rows = out.stdout.splitlines()
                 self.assertNotIn("agent", self.kinds(rows))
                 notes = next(r for r in rows if r.split("\t")[2] == "notes")
-                self.assertIn(G[S.blocked], plain(notes))  # legacy option
+                self.assertIn(G[S.blocked], plain(notes))  # native session state
                 self.assertIn("murmur too old", self.header())
         self.snapshot([self.own()], peers=[{"name": lone, "needs_session": True}])
         self.assertIn("murmur too old", self.header())

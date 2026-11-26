@@ -776,6 +776,14 @@ class LiveTmux(unittest.TestCase):
         pins.start()
         self.addCleanup(pins.stop)
         self.addCleanup(support.kill_server, ["tmux", "-L", self.socket])
+        shimdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, shimdir, True)
+        support.program_state_tmux(shimdir)
+        patched = unittest.mock.patch.dict(
+            os.environ, {"PATH": f"{shimdir}:{os.environ['PATH']}"}
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
         self.tmux("new-session", "-d", "-s", "busy")
         self.tmux("new-session", "-d", "-s", "quiet")
         self.tmux("new-session", "-d", "-s", "odd")
@@ -785,10 +793,19 @@ class LiveTmux(unittest.TestCase):
             ["tmux", "-L", self.socket, *args], check=False, capture_output=True
         )
 
-    def test_reads_murmur_session_state(self):
-        self.tmux("set-option", "-t", "busy", "@murmur_session_state", "blocked")
-        self.tmux("set-option", "-t", "odd", "@murmur_session_state", "bogus")
-        self.assertEqual(tsesh.TmuxBackend().live_sessions()["busy"], State.blocked)
+    def test_reads_session_program_state(self):
+        for name, raw in (("busy", "blocked"), ("odd", "bogus"), ("quiet", "idle")):
+            self.tmux("set-option", "-t", name, "@test_program_state", raw)
+        live = tsesh.TmuxBackend().live_sessions()
+        self.assertEqual(live["busy"], State.blocked)
+        self.assertIsNone(live["odd"])
+        self.assertIsNone(live["quiet"])
+
+    def test_maps_every_osc_7501_state(self):
+        for raw in ("blocked", "error", "working", "done"):
+            self.assertEqual(tsesh.AgentState.parse(raw), State[raw])
+        self.assertIsNone(tsesh.AgentState.parse("idle"))
+        self.assertIsNone(tsesh.AgentState.parse(""))
 
     def sessions(self):
         return sorted(tsesh.TmuxBackend().live_sessions())

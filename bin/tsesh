@@ -29,14 +29,16 @@ VERSION = "1.0.3"
 
 
 class AgentState(enum.IntEnum):
-    """Agent states as murmur publishes them, ordered by urgency.
+    """Agent states, ordered by urgency.
 
-    tsesh reads one tmux option per session, ``@murmur_session_state``, which
-    murmur keeps at the strongest non-idle state across the session's panes.
-    Without murmur the option is unset and every row has no state.
+    tsesh reads vtmux's native ``#{session_program_state}`` per session: the
+    OSC 7501 states blocked, error, working, done and idle, rolled up to the
+    strongest across the session's panes. Empty (a plain tmux, or no pane
+    reports) means no state; idle shows no state either. ``waiting`` and
+    ``crashed`` only come from murmur's snapshot.
     """
 
-    idle = 0  # counted in a session's breakdown; the option never yields it
+    idle = 0  # counted in a session's breakdown; a row never shows it
     waiting = 1
     working = 2
     done = 3
@@ -1149,7 +1151,7 @@ def _is_state(value: object) -> bool:
 
 # Every pane field tsesh consumes, with its type check. One bad pane rejects
 # the whole snapshot: half-trusting a malformed document is worse than the
-# plain @murmur_session_state view. Pane ids must be %N: they reach tmux as
+# plain #{session_program_state} view. Pane ids must be %N: they reach tmux as
 # targets, where "notes" or "%1; ..." would mean something else.
 PANE_FIELDS = {
     "pane": _is_pane_id,
@@ -1668,7 +1670,7 @@ def build_view(
     config = load_config()
     configured_sessions = config.sessions
     configured_paths = {expand(session.path) for session in configured_sessions}
-    # One list-sessions call; murmur keeps @murmur_session_state current.
+    # One list-sessions call; vtmux keeps #{session_program_state} current.
     if live is None:
         live = backend().live_sessions()
     live_names = set(live)
@@ -2506,7 +2508,7 @@ class TmuxBackend:
         result = tmux_cmd(
             "list-sessions",
             "-F",
-            "#{session_attached}\t#{session_id}\t#{@murmur_session_state}"
+            "#{session_attached}\t#{session_id}\t#{session_program_state}"
             "\t#{session_activity}\t#{session_name}"
             "\n#{session_id}\tP\t#{session_path}",
             ";",
