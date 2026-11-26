@@ -23,8 +23,13 @@ What it is not:
 - not a replacement for murmur's state collection: it only reads what murmur
   publishes
 - no agent control beyond jumping to an agent
-- no runtime dependencies beyond tmux, fzf and Python; murmur is optional, and
-  without it the state column is blank and everything else works
+- no runtime dependencies beyond tmux, fzf and Python; murmur is optional
+
+On vtmux >= 3.8-rc3 (`set -s vtmux-program-status on`) the state column is
+native, read from `#{session_program_state}`. On vanilla tmux 3.8, which drops
+OSC 7501, the picker, zoxide, root-dir, kill and last-session all work; the
+state column is blank and local agents do not appear in `prefix a`. murmur 3.0
+sees no local panes there; murmur 2.x (branch `release/2.x`) is the clean out.
 
 ## Install
 

@@ -4,9 +4,20 @@ If [murmur](https://github.com/mu-crew/murmur) runs on the machine, each
 session also shows its coding agents' state: crashed, error, blocked, done,
 working or waiting. Without murmur that column is blank and everything else works.
 
+## Vanilla tmux 3.8
+
+Stock tmux 3.8 drops OSC 7501 and OSC 7577 and has no `#{*_program_state}`
+formats. There the picker, zoxide, root-dir, kill and last-session work, the
+session state column is blank, and local agents do not show in `prefix a`
+(murmur 3.0 sees no local panes; remote peers on vtmux or Rex still do, and
+jump works). murmur 2.x (branch `release/2.x`) is the clean out; otherwise use
+vtmux >= 3.8-rc3 with `set -s vtmux-program-status on`.
+
 ## Agent state
 
-tsesh reads vtmux's native `#{session_program_state}` per session, in a single
+On vtmux >= 3.8-rc3 (`vtmux-program-status on`), tsesh reads the native
+`#{session_program_state}` per session (and `#{window_program_state}` for the
+preview), in a single
 `list-sessions` call. vtmux rolls the OSC 7501 states of the session's panes
 up to the strongest: `blocked`, `error`, `working`, `done` or `idle`. Empty
 (plain tmux, or no pane reports) means no state. An idle session shows no
