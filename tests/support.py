@@ -119,14 +119,16 @@ for _sig in (signal.SIGTERM, signal.SIGHUP):
 
 def program_state_tmux(bindir: str) -> None:
     """Put a ``tmux`` wrapper in BINDIR that maps vtmux's native
-    ``#{session_program_state}`` to the user option ``@test_program_state``,
-    which a plain tmux can set. Prepend BINDIR to PATH to use it."""
+    ``#{session_program_state}`` to the user option ``@test_program_state``
+    and ``#{window_program_state}`` to ``@test_window_program_state``, which a
+    plain tmux can set. Prepend BINDIR to PATH to use it."""
     real = shutil.which("tmux")
     path = os.path.join(bindir, "tmux")
     with open(path, "w") as f:
         f.write(
             f'#!/bin/bash\nargs=()\nfor a in "$@"; do\n'
-            f'  args+=("${{a//session_program_state/@test_program_state}}")\n'
+            f'  a="${{a//session_program_state/@test_program_state}}"\n'
+            f'  args+=("${{a//window_program_state/@test_window_program_state}}")\n'
             f'done\nexec {real} "${{args[@]}}"\n'
         )
     os.chmod(path, 0o755)

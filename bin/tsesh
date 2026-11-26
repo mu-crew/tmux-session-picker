@@ -1825,7 +1825,7 @@ def tmux_session_preview(name: str) -> bool:
         # The pane fields are the window's active pane. The path last: it
         # may hold a tab (a window name is assumed not to).
         "#{session_attached}\t#{window_index}\t#{window_active}\t#{window_panes}"
-        "\t#{@murmur_window_state}\t#{pane_index}\t#{pane_current_command}"
+        "\t#{window_program_state}\t#{pane_index}\t#{pane_current_command}"
         "\t#{window_name}\t#{pane_current_path}",
         ";",
         "display-message",

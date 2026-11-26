@@ -987,6 +987,7 @@ class WindowPaths(unittest.TestCase):
             self.dirs[name].mkdir()
         bindir = self.tmp / "bin"
         bindir.mkdir()
+        support.program_state_tmux(str(bindir))
         zoxide = bindir / "zoxide"
         listed = "\n".join(str(self.dirs[n]) for n in ("root", "other", "zox"))
         zoxide.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(listed)}\n")
@@ -1084,6 +1085,21 @@ class WindowPaths(unittest.TestCase):
     def test_zoxide_dirs_of_a_live_session_are_dropped(self):
         zoxide = [name for kind, name in self.rows() if kind == "zoxide"]
         self.assertEqual(zoxide, ["zox"])
+
+    def test_preview_shows_osc_7501_window_states(self):
+        for target, raw in (("proj:0", "working"), ("proj:1", "blocked")):
+            self.on_tmux(
+                "set-option", "-w", "-t", target, "@test_window_program_state", raw
+            )
+        self.on_tmux(
+            "set-option", "-w", "-t", "proj:2", "@test_window_program_state", "bogus"
+        )
+        out = self.tsesh("preview", "--kind", "tmux", "--session-name", "proj")
+        windows = [ln for ln in out.stdout.splitlines() if re.match(r"[* ] \d+ ", ln)]
+        self.assertIn(f" 0 {G[S.working]} ", windows[0])
+        self.assertIn(f" 1 {G[S.blocked]} ", windows[1])
+        self.assertRegex(windows[2], r"^  2   ")
+        self.assertIn("attention 1", out.stdout.splitlines()[0])
 
     def test_preview_lists_every_window(self):
         out = self.tsesh("preview", "--kind", "tmux", "--session-name", "proj")
