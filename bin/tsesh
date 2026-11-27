@@ -25,7 +25,7 @@ from shlex import quote as sh_quote
 from typing import TypeGuard
 
 # Bumped by hand at release time; see RELEASING.md.
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 
 
 class AgentState(enum.IntEnum):

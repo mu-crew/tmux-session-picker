@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-11-27
+
 ### Fixed
 
 - The agents view said "murmur too old for the agent view" with murmur 3,
