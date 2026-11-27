@@ -5,6 +5,13 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The agents view said "murmur too old for the agent view" with murmur 3,
+  which also reports Rex panes (`server.kind` `rex`, pane ids `block:...`).
+  One such pane rejected the whole snapshot. Rex panes are now listed and
+  reached with `murmur jump`; tmux pane ids must still be `%N`.
+
 ## [2.0.0] - 2026-11-26
 
 ### Changed

@@ -1128,7 +1128,7 @@ def _is_server(value: object) -> bool:
     if not is_object(value):
         return False
     kind = value.get("kind")
-    if kind == "default":
+    if kind == "default" or kind == "rex":
         return True
     return (
         isinstance(kind, str)
@@ -1154,10 +1154,11 @@ def _is_state(value: object) -> bool:
 
 # Every pane field tsesh consumes, with its type check. One bad pane rejects
 # the whole snapshot: half-trusting a malformed document is worse than the
-# plain #{session_program_state} view. Pane ids must be %N: they reach tmux as
-# targets, where "notes" or "%1; ..." would mean something else.
+# plain #{session_program_state} view. A tmux pane id must be %N: it reaches
+# tmux as a target, where "notes" or "%1; ..." would mean something else. A Rex
+# pane ("block:...") is never on tsesh's server, so only `murmur jump` uses it.
 PANE_FIELDS = {
-    "pane": _is_pane_id,
+    "pane": lambda v: _is_str(v) and bool(v),
     "local": _is_bool,
     "host": _is_str,
     "server": _is_server,
@@ -1176,7 +1177,12 @@ PANE_FIELDS = {
 def valid_pane(pane: object) -> bool:
     if not is_object(pane):
         return False
-    return all(k in pane and check(pane[k]) for k, check in PANE_FIELDS.items())
+    if not all(k in pane and check(pane[k]) for k, check in PANE_FIELDS.items()):
+        return False
+    server = pane["server"]
+    return (is_object(server) and server.get("kind") == "rex") or _is_pane_id(
+        pane["pane"]
+    )
 
 
 def valid_peer(peer: object) -> bool:

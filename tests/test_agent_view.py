@@ -279,6 +279,18 @@ class AgentPicker(Harness):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("jump j9:x", self.murmur_calls())
 
+    def test_enter_on_a_rex_agent_runs_murmur_jump(self):
+        rex = agent_pane(
+            pane="block:01a2", server={"kind": "rex"}, jump_target="j9:rex"
+        )
+        self.snapshot([rex, self.own(label="tmux-agent")])
+        out = self.tsesh(
+            "pick-and-connect", "--mode", "agents", pick="agent-a", **self.in_tmux()
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(len(self.steps()[0]["rows"]), 2)
+        self.assertIn("jump j9:rex", self.murmur_calls())
+
     def test_murmur_read_once_per_view_and_cache_warmed(self):
         self.snapshot([self.own()])
         self.tsesh("pick-and-connect", "--mode", "agents", **self.in_tmux())
@@ -527,6 +539,7 @@ class MurmurUnavailable(Harness):
     def test_malformed_snapshot(self):
         for doc in (
             {"panes": [self.own(workstream=3)]},
+            {"panes": [agent_pane(pane="notes", server={"kind": "default"})]},
             {"panes": [self.own()], "peers": [{"name": 1}]},
             {"panes": [self.own()], "peers": "peer-a"},
         ):
