@@ -1944,19 +1944,21 @@ def reload_cmd(mode: str, crew: bool = False) -> str:
 
 
 def kill_bind() -> str:
-    """ctrl-x: kill the highlighted session row, then redraw the current view.
+    """ctrl-x: kill the highlighted session row, or dismiss the highlighted
+    agent's crash, then redraw the current view.
 
-    Only live session rows carry an id; the `=` form keeps an empty one from
-    eating the next flag. fzf exports the live prompt as FZF_PROMPT, which
-    names the view.
+    Only live session rows carry an id and only agent rows a jump target; the
+    `=` form keeps an empty one from eating the next flag. fzf exports the
+    live prompt as FZF_PROMPT, which names the view.
     """
     me = sh_quote(sys.argv[0])
     client = f" --client {sh_quote(INVOKING_CLIENT)}" if INVOKING_CLIENT else ""
     kind = FZF_ROW_FIELDS.index("kind") + 1
     field = FZF_ROW_FIELDS.index("session_id") + 1
+    target = FZF_ROW_FIELDS.index("jump_target") + 1
     return (
         f"ctrl-x:execute-silent({me} kill --kind={{{kind}}}"
-        f" --session-id={{{field}}}{client})"
+        f" --session-id={{{field}}} --jump-target={{{target}}}{client})"
         f'+reload({me} list --prompt "$FZF_PROMPT")'
     )
 
@@ -2805,14 +2807,33 @@ def connect(target: str) -> int:
     return connect_resolved(name, path, None, DEFAULT_SPLIT, derived_name=True)
 
 
-def kill(kind: str, session_id: str, client: str = "") -> int:
+def clear_agent(jump_target: str) -> int:
+    """Dismiss the crash murmur recorded for an agent: ``murmur clear
+    --target``. murmur clears only its own crash records, and only this
+    host's, so a live agent or a remote one is left as it is."""
+    exe = murmur_command()
+    if exe and jump_target:
+        with contextlib.suppress(OSError):
+            subprocess.run(
+                [exe, "clear", "--target", jump_target],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+    return 0
+
+
+def kill(kind: str, session_id: str, client: str = "", jump_target: str = "") -> int:
     """Kill the session with tmux id SESSION_ID (``$N``), from a picker row
-    of KIND.
+    of KIND; on an agent row, dismiss its crash instead (clear_agent).
 
     Only live session rows carry an id, so any other row is a no-op. A name
     is no target: ``=$0`` means id $0 and ``=a.b`` means window b. The
     session the invoking client is attached to is refused with a message.
     """
+    if kind == "agent":
+        return clear_agent(jump_target)
     if kind not in ("default", "tmux") or not re.fullmatch(r"\$[0-9]+", session_id):
         return 0
     mark_switched()  # its reload follows; the handover must not undo it
@@ -3008,13 +3029,18 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         p_kill = sub.add_parser(
             "kill",
-            help="kill a live session by id (ctrl-x in the picker)",
+            help="kill a live session by id, or clear an agent's crash"
+            " (ctrl-x in the picker)",
             description="Kill the live session with tmux id --session-id ($N)."
             " Only --kind=tmux or default rows count, and never the session"
-            " --client is in.",
+            " --client is in. With --kind=agent, dismiss the crash murmur"
+            " recorded for --jump-target instead.",
         )
         p_kill.add_argument("--kind", default="", help="the row's kind")
         p_kill.add_argument("--session-id", default="", help="tmux session id, $N")
+        p_kill.add_argument(
+            "--jump-target", default="", help="agent rows: murmur's jump_target"
+        )
         p_kill.add_argument(
             "--client", default="", help="tmux client the picker was opened from"
         )
@@ -3049,7 +3075,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             return fzf_enter()
         if args.cmd == "kill":
             return kill(
-                row_unescape(args.kind), row_unescape(args.session_id), args.client
+                row_unescape(args.kind),
+                row_unescape(args.session_id),
+                args.client,
+                row_unescape(args.jump_target),
             )
         if args.cmd == "picker":
             return fzf(args.mode, query=args.query)

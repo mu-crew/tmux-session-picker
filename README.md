@@ -57,7 +57,7 @@ Releases are git tags; pin one with
 | `prefix T` | Session rooted at the current pane's directory (`@tsesh_key_root`) |
 | `ctrl-a` / `ctrl-s` / `ctrl-f` | All / sessions / find view |
 | `ctrl-g` | Agents view; again: show or hide crew agents |
-| `ctrl-x` | Kill the highlighted session (not the one you are in) |
+| `ctrl-x` | Kill the highlighted session (not the one you are in); on an agent, dismiss its crash |
 | `ctrl-/` | Show or hide the preview |
 | `tab` / `shift-tab` | Down / up |
 | `enter` | Switch to the row (creating the session if needed) or jump to the agent |

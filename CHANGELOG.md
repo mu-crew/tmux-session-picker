@@ -5,6 +5,12 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `ctrl-x` on a crashed agent dismisses the crash (`murmur clear --target`,
+  murmur with `clear --target`). Only this host's crashes clear; on a live
+  or remote agent it does nothing. Session rows still kill.
+
 ## [2.0.1] - 2026-11-27
 
 ### Fixed

@@ -2366,6 +2366,35 @@ class AmbientServer(FakeMurmur):
         self.assertTrue(all(e.here == "" for e in rows))
 
 
+class AgentClear(FakeMurmur):
+    """ctrl-x on an agent row: dismiss its crash with murmur, by its token."""
+
+    def setUp(self):
+        self.install([])
+        # main() pins the server it resolved; do not leak that pin.
+        pins = unittest.mock.patch.multiple(
+            tsesh, PINNED_SOCKET=None, START_SOCKET=None
+        )
+        pins.start()
+        self.addCleanup(pins.stop)
+
+    def test_ctrl_x_passes_the_rows_jump_target(self):
+        field = tsesh.FZF_ROW_FIELDS.index("jump_target") + 1
+        self.assertIn(f"--jump-target={{{field}}}", tsesh.kill_bind())
+
+    def test_an_agent_row_clears_by_its_jump_target(self):
+        self.assertEqual(
+            tsesh.main(["kill", "--kind=agent", "--jump-target=j1:abc"]), 0
+        )
+        self.assertEqual(self.calls(), ["clear --target j1:abc"])
+
+    def test_no_clear_without_a_token_or_off_an_agent_row(self):
+        tsesh.main(["kill", "--kind=agent", "--jump-target="])
+        for kind in ("tmux", "default", "zoxide", "find", ""):
+            tsesh.main(["kill", f"--kind={kind}", "--jump-target=j1:abc"])
+        self.assertEqual(self.calls(), [])
+
+
 class AgentEnter(FakeMurmur):
     def pick(self, entry, **kw):
         old = tsesh.run_fzf
