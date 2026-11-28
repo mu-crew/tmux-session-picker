@@ -183,6 +183,7 @@ STATE_WIDTH = 11
 # Window and pane counts of a live session ("3w 5p").
 COUNTS_WIDTH = 7
 # Agents view columns after the label.
+MUX_WIDTH = 4
 STREAM_WIDTH = 16
 HOST_WIDTH = 12
 AGE_WIDTH = 4
@@ -302,17 +303,27 @@ class Layout:
         width -= (COUNTS_WIDTH + 1) * self.show_counts
         return width if width >= 8 else 0
 
-    def agent_columns(self, stream: bool, host: bool) -> tuple[bool, bool]:
-        """Which of the agents view's stream and host columns fit; the host
-        column goes first."""
+    def agent_columns(
+        self, mux: bool, stream: bool, host: bool
+    ) -> tuple[bool, bool, bool]:
+        """Which of the agents view's mux, stream and host columns fit; host
+        goes first, then stream, then mux."""
         room = self._rest - AGE_WIDTH
-        if stream and host and room < STREAM_WIDTH + HOST_WIDTH + 2:
+
+        def need() -> int:
+            return (
+                (MUX_WIDTH + 1) * mux
+                + (STREAM_WIDTH + 1) * stream
+                + (HOST_WIDTH + 1) * host
+            )
+
+        if host and room < need():
             host = False
-        if stream and room < STREAM_WIDTH + 1 + (HOST_WIDTH + 1) * host:
+        if stream and room < need():
             stream = False
-        if host and room < HOST_WIDTH + 1:
-            host = False
-        return stream, host
+        if mux and room < need():
+            mux = False
+        return mux, stream, host
 
 
 def terminal_columns() -> int:
@@ -747,6 +758,7 @@ def prompt_state(prompt: str) -> tuple[str, bool]:
 
 @dataclass(frozen=True)
 class AgentColumns:
+    mux: bool = False
     stream: bool = False
     host: bool = False
 
@@ -782,10 +794,12 @@ def header_text(
         lines.append("  " + status)
     nw = LAYOUT.name_width
     if mode == "agents":
-        stream, host = LAYOUT.agent_columns(
-            *(astuple(columns) if columns else (False, False))
+        mux, stream, host = LAYOUT.agent_columns(
+            *(astuple(columns) if columns else (False, False, False))
         )
         titles = "   " + fit("agent", nw)
+        if mux:
+            titles += " " + fit("mux", MUX_WIDTH)
         if stream:
             titles += " " + fit("stream", STREAM_WIDTH)
         if host:
@@ -1546,12 +1560,18 @@ def agent_entries(
             crew or pane.get("visible")
         ):
             where = f"{session}:{clean_field(pane.get('window_name'))}".strip(":")
-            parts = [clean_field(pane.get("host")), where]
+            parts = [agent_mux(pane), clean_field(pane.get("host")), where]
             parts.append(age_text(pane.get("updated_at")))
             rows.append(
                 agent_entry(pane, detail=" \u00b7 ".join(p for p in parts if p))
             )
     return rows, counts
+
+
+def agent_mux(pane: dict) -> str:
+    """Which multiplexer owns this pane: ``rex`` or ``tmux``."""
+    server = pane.get("server")
+    return "rex" if isinstance(server, dict) and server.get("kind") == "rex" else "tmux"
 
 
 def agent_stream(pane: dict) -> str:
@@ -1569,10 +1589,13 @@ def agent_view_entries(
     shown agents per state."""
     shown = [p for p in panes if crew or p.get("visible")]
     columns = AgentColumns(
+        mux=bool(shown),
         stream=any(agent_stream(p) for p in shown),
         host=any(not p.get("local") for p in shown),
     )
-    stream_on, host_on = LAYOUT.agent_columns(columns.stream, columns.host)
+    mux_on, stream_on, host_on = LAYOUT.agent_columns(
+        columns.mux, columns.stream, columns.host
+    )
     counts: dict[AgentState, int] = {}
     rows: list[Entry] = []
     for pane in shown:
@@ -1581,6 +1604,8 @@ def agent_view_entries(
         label = clean_field(pane.get("label"))
         label = fit(row_escape(label), LAYOUT.name_width, keep="middle")
         cells = [f"{STATE_GLYPH[state]} {label}"]
+        if mux_on:
+            cells.append(fit(agent_mux(pane), MUX_WIDTH))
         if stream_on:
             cells.append(fit(row_escape(agent_stream(pane)), STREAM_WIDTH))
         if host_on:

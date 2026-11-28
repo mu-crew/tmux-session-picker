@@ -335,12 +335,19 @@ class ResponsiveLayout(unittest.TestCase):
                     self.assertLessEqual(tsesh.cell_width(text), layout.row_width, text)
                 header = ANSI.sub(
                     "",
-                    tsesh.header_text("agents", columns=tsesh.AgentColumns(True, True)),
+                    tsesh.header_text(
+                        "agents",
+                        columns=tsesh.AgentColumns(mux=True, stream=True, host=True),
+                    ),
                 )
-                seen[columns] = ("stream" in header, "host" in header)
-        self.assertEqual(seen[260], (True, True))
-        self.assertEqual(seen[40], (False, False))
-        self.assertIn((True, False), seen.values())  # host goes first
+                seen[columns] = (
+                    "mux" in header,
+                    "stream" in header,
+                    "host" in header,
+                )
+        self.assertEqual(seen[260], (True, True, True))
+        self.assertEqual(seen[40], (True, False, False))  # mux fits even at 40 cols
+        self.assertIn((True, True, False), seen.values())  # host goes first
 
     def test_cell_width(self):
         self.assertEqual(tsesh.cell_width("abc"), 3)

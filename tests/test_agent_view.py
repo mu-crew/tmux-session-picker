@@ -216,8 +216,33 @@ class AgentRows(Harness):
         columns = plain(start["header"].splitlines()[-1])
         text = self.texts(start["rows"])[0]
         self.assertEqual(columns.index("agent"), text.index("lab"))
+        self.assertEqual(columns.index("mux"), text.index("tmux"))
         self.assertEqual(columns.index("stream"), text.index("ws"))
         self.assertEqual(columns.index("host"), text.index("→"))
+
+    def test_mux_column_distinguishes_tmux_and_rex(self):
+        self.snapshot(
+            [
+                self.own(label="in-tmux", render_state="blocked"),
+                agent_pane(
+                    label="in-rex",
+                    render_state="blocked",
+                    server={"kind": "rex"},
+                    pane="block:b1",
+                    session="session:s1",
+                    window="window:w1",
+                ),
+            ]
+        )
+        agents = self.texts(
+            self.tsesh("list", "--mode", "agents", **self.in_tmux()).stdout.splitlines()
+        )
+        self.assertIn("tmux", agents[0])
+        self.assertIn("rex", agents[1])
+        all_rows = self.tsesh("list", "--mode", "all", **self.in_tmux()).stdout.splitlines()
+        agent_lines = [plain(r.split("\t")[0]) for r in all_rows if r.split("\t")[1] == "agent"]
+        self.assertIn("tmux", agent_lines[0])
+        self.assertIn("rex", agent_lines[1])
 
 
 class AgentPicker(Harness):
