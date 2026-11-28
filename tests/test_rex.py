@@ -160,17 +160,21 @@ class RexIntegration(unittest.TestCase):
             ],
         )
 
-    def test_connect_resolved_in_rex_honors_split(self):
+    def test_connect_resolved_in_rex_honors_startup_and_split(self):
         os.environ["TERM_PROGRAM"] = "rex"
         os.environ["REX_BLOCK"] = "block:here"
         os.environ.pop("TMUX", None)
         project = self.tmp / "splitproj"
         project.mkdir()
-        rc = tsesh.connect_resolved("splitproj", str(project), None, "vertical")
+        rc = tsesh.connect_resolved("splitproj", str(project), "nvim", "vertical")
         self.assertEqual(rc, 0)
         calls = self.rex_calls()
         self.assertEqual(
             calls[2],
+            ["--autostart=false", "send", "-b", "block:b0", "--", "nvim\r"],
+        )
+        self.assertEqual(
+            calls[3],
             [
                 "--autostart=false",
                 "split",
@@ -182,7 +186,7 @@ class RexIntegration(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            calls[3],
+            calls[4],
             [
                 "--autostart=false",
                 "do",

@@ -1308,8 +1308,6 @@ def rex_create_and_select(
         real_path,
         "--json",
     ]
-    if startup:
-        argv += ["--", "sh", "-lc", startup]
     proc = subprocess.run(
         argv,
         env=rex_local_env(),
@@ -1335,6 +1333,15 @@ def rex_create_and_select(
                     bid = clean_field(blocks[0])
     except (ValueError, AttributeError):
         pass
+    if startup and bid:
+        subprocess.run(
+            [exe, "--autostart=false", "send", "-b", bid, "--", f"{startup}\r"],
+            env=rex_local_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
     if split in ("vertical", "horizontal") and bid:
         direction = "right" if split == "vertical" else "below"
         subprocess.run(
