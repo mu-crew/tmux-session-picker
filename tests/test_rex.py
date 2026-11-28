@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import support  # noqa: F401
 from test_tsesh import ANSI, TSESH, tsesh
@@ -107,6 +108,36 @@ class RexIntegration(unittest.TestCase):
                 {"TMUX": "/tmp/s,1,0", "TERM_PROGRAM": "rex", "REX_BLOCK": "block:1"}
             ),
         )
+
+    def _agent_jump(self, before, after):
+        os.environ["TERM_PROGRAM"] = "rex"
+        os.environ["REX_BLOCK"] = "block:float"
+        os.environ.pop("TMUX", None)
+        os.environ["TSESH_MURMUR"] = "/usr/bin/true"
+        selected = []
+        payload = tsesh.EntryPayload(session_name="s", kind="agent", jump_target="j1:abc")
+        with (
+            mock.patch.object(tsesh, "rex_session_windows", side_effect=[before, after]),
+            mock.patch.object(
+                tsesh, "rex_select_session", side_effect=lambda s, w="": selected.append((s, w)) or 0
+            ),
+        ):
+            rc = tsesh.connect_agent(payload)
+        os.environ.pop("TSESH_MURMUR", None)
+        return rc, selected
+
+    def test_agent_jump_in_rex_selects_the_tab_it_opened(self):
+        rc, selected = self._agent_jump(
+            ("session:s", ["window:a"]), ("session:s", ["window:a", "window:new"])
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(selected, [("session:s", "window:new")])
+
+    def test_agent_jump_in_rex_without_a_new_tab_selects_nothing(self):
+        # A Rex agent: murmur focuses and selects it itself; no window is added.
+        rc, selected = self._agent_jump(("session:s", ["window:a"]), ("session:s", ["window:a"]))
+        self.assertEqual(rc, 0)
+        self.assertEqual(selected, [])
 
     def test_select_rex_session(self):
         rc = tsesh.rex_select_session("session:r1")

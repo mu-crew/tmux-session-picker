@@ -2808,6 +2808,36 @@ def proven_here(here: str, socket: str) -> bool:
     return bool(here and socket and own_socket() == socket)
 
 
+def rex_session_windows(target: str) -> tuple[str, list[str]]:
+    """(session_id, window ids in order) of the Rex session holding TARGET
+    (a session or block id), or ("", []) when Rex cannot say."""
+    exe = rex_command()
+    if exe is None or not target:
+        return "", []
+    try:
+        proc = subprocess.run(
+            [exe, "--autostart=false", "--timeout", "1s", "session", "inspect", target, "--json"],
+            env=rex_local_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        info = json.loads(proc.stdout) if proc.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return "", []
+    if not isinstance(info, dict):
+        return "", []
+    windows = info.get("windows") if isinstance(info.get("windows"), list) else []
+    ids = [
+        w["window_id"]
+        for w in windows
+        if isinstance(w, dict) and isinstance(w.get("window_id"), str)
+    ]
+    return clean_field(info.get("session_id")), ids
+
+
 def murmur_jump_env(env: Mapping[str, str] = os.environ) -> dict[str, str]:
     """The environment for ``murmur jump``. In Rex, murmur 3.1.0 and older
     detect a Rex pane only by $REX_SESSION, which Rex no longer sets; without
@@ -2843,6 +2873,11 @@ def connect_agent(payload: EntryPayload) -> int:
     if exe is None or not payload.jump_target:
         print("agent: murmur is needed to reach this agent", file=sys.stderr)
         return 1
+    # In Rex a tmux jump opens a new tab and returns; murmur 3.1.0 does not
+    # select it, and closing a floating picker would leave Rex.app on the old
+    # window. Note the windows first, then go to whichever one the jump made.
+    rex = in_rex()
+    before = rex_session_windows(rex_target())[1] if rex else []
     # stdio stays inherited: jump may need the tty (ssh, a hardware-key tap).
     code = subprocess.run(
         [exe, "jump", payload.jump_target], env=murmur_jump_env(), check=False
@@ -2850,6 +2885,11 @@ def connect_agent(payload: EntryPayload) -> int:
     if code != 0:
         report_failure(f"murmur jump {payload.jump_target} failed (exit {code})")
         return 1
+    if rex:
+        session_id, after = rex_session_windows(rex_target())
+        new = [w for w in after if w not in before]
+        if session_id and new:
+            rex_select_session(session_id, new[-1])
     return 0
 
 
