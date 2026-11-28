@@ -9,6 +9,8 @@ file `$TSESH_CONFIG` names) to pin sessions or change the filters.
 
 `TSESH_MURMUR` names the murmur to run (default `murmur` on `PATH`) and
 `TSESH_MURMUR_TIMEOUT` its time limit in seconds (default 1).
+`TSESH_REX` names the `rex` to run (default `rex` on `PATH`; empty turns Rex
+support off, see [rex.md](rex.md)).
 `TSESH_TMUX_SOCKET_PATH` / `TSESH_TMUX_SOCKET_NAME` point tsesh at another
 tmux server, and `TSESH_FAST=1` selects the fast test gate; both exist for the
 tests.

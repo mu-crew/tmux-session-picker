@@ -7,6 +7,17 @@ versions follow [SemVer](https://semver.org/).
 
 ### Added
 
+- **Rex.** tsesh runs in a Rex pane as it does in tmux, and lists this
+  machine's Rex sessions (`■`) next to the tmux ones when a Rex.app is
+  connected. Enter shows a Rex session in Rex.app; from Rex, a tmux session
+  opens in a new Rex tab and a new directory or pinned session becomes a Rex
+  session named after it, with its `startup` and `split`. Rex rows preview
+  their windows and focused pane, and `ctrl-x` kills them. See
+  [docs/rex.md](docs/rex.md).
+- The agents view has a `mux` column (`tmux` or `rex`), and the all view's
+  attention rows name the multiplexer.
+- From a Rex pane, `murmur jump` to a tmux agent lands on its new tab, also
+  with murmur 3.1.0 and 3.1.1, which do not do that themselves.
 - `ctrl-x` on a crashed agent dismisses the crash (`murmur clear --target`,
   murmur with `clear --target`). Only this host's crashes clear; on a live
   or remote agent it does nothing. Session rows still kill.

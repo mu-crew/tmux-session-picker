@@ -80,7 +80,9 @@ header says that instead.
 The agents view starts no tmux server and works outside tmux. Enter moves the
 client itself only when the picker runs inside the agent's tmux server;
 otherwise it runs `murmur jump`, which handles other hosts and servers and
-any confirmation it needs on the terminal.
+any confirmation it needs on the terminal. The `mux` column says whether an
+agent runs in tmux or Rex; jumping from and to Rex is covered in
+[rex.md](rex.md).
 
 ### Markers
 

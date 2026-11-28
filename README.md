@@ -1,8 +1,9 @@
 # tmux-session-picker
 
-`tsesh` is a tmux session picker. One fzf popup lists pinned sessions, live
-sessions, zoxide directories and a directory scan. Pick a row and tsesh
-switches to that session, creating it in the directory first if needed. With
+`tsesh` is a session picker for tmux and [Rex](https://www.superlogical.com/rex).
+One fzf popup lists pinned sessions, live tmux and Rex sessions, zoxide
+directories and a directory scan. Pick a row and tsesh switches to that
+session, creating it in the directory first if needed. With
 [murmur](https://github.com/mu-crew/murmur), the same popup also lists coding
 agents and jumps to them.
 
@@ -15,6 +16,9 @@ What you get:
 - with murmur: each session's agent state (`crashed`, `error`, `blocked`,
   `done`, `working`, `waiting`; `idle` is only counted), attention rows and an
   agents view
+- with Rex: the same picker in a Rex pane, Rex sessions next to tmux ones,
+  and Enter crossing between them (a tmux session opens in a Rex tab, a new
+  project becomes a named Rex session)
 
 What it is not:
 
@@ -23,7 +27,8 @@ What it is not:
 - not a replacement for murmur's state collection: it only reads what murmur
   publishes
 - no agent control beyond jumping to an agent
-- no runtime dependencies beyond tmux, fzf and Python; murmur is optional
+- no runtime dependencies beyond tmux, fzf and Python; murmur and Rex are
+  optional
 
 On vtmux >= 3.8-rc3 (`set -s vtmux-program-status on`) the state column is
 native, read from `#{session_program_state}`. On vanilla tmux 3.8, which drops
@@ -57,13 +62,22 @@ Releases are git tags; pin one with
 | `prefix T` | Session rooted at the current pane's directory (`@tsesh_key_root`) |
 | `ctrl-a` / `ctrl-s` / `ctrl-f` | All / sessions / find view |
 | `ctrl-g` | Agents view; again: show or hide crew agents |
-| `ctrl-x` | Kill the highlighted session (not the one you are in); on an agent, dismiss its crash |
+| `ctrl-x` | Kill the highlighted tmux or Rex session (not the tmux session you are in); on an agent, dismiss its crash |
 | `ctrl-/` | Show or hide the preview |
 | `tab` / `shift-tab` | Down / up |
 | `enter` | Switch to the row (creating the session if needed) or jump to the agent |
 | `esc` / `ctrl-c` | Abort |
 
 Set an option to move a key, or to `""` to unbind it.
+
+## Rex
+
+Run `tsesh pick-and-connect` in a Rex pane, or bind it in a floating layer:
+[mu-crew/dotfiles](https://github.com/mu-crew/dotfiles) does that with
+`cmd+b s` (picker) and `cmd+b a` or `cmd+j` (agents), matching `prefix s` and
+`prefix a`. Rex sessions are listed only when a Rex.app is connected to this
+machine's Rex server, since nothing else can show one. Details are in
+[docs/rex.md](docs/rex.md).
 
 ## More
 
@@ -75,6 +89,8 @@ Set an option to move a key, or to `""` to unbind it.
   layout and columns, preview, theme
 - [docs/sessions.md](docs/sessions.md): session rows, reuse by path, name
   collisions, kill, last, server lifetime
+- [docs/rex.md](docs/rex.md): Rex session rows, what Enter does from tmux and
+  from Rex, agents, opening tsesh in Rex
 - [docs/development.md](docs/development.md): gates, uv pins, tests, releasing
 - [CHANGELOG.md](CHANGELOG.md) and [RELEASING.md](RELEASING.md)
 

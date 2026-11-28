@@ -359,7 +359,7 @@ LAST_FILE = STATE_DIR / "last"
 KIND_ICON = {
     "default": "★",
     "tmux": "●",
-    "rex": "◆",
+    "rex": "■",
     "zoxide": "◦",
     "find": "·",
     "agent": "◈",

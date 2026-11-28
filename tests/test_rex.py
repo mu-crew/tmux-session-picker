@@ -91,6 +91,9 @@ class RexIntegration(unittest.TestCase):
         self.assertEqual([e.name for e in rex_rows], ["dotfiles", "murmur"])
         self.assertEqual([e.session_id for e in rex_rows], ["session:r1", "session:r2"])
         self.assertEqual(rex_rows[0].counts, "rex")
+        # Not the current-row marker, which sits one column to the left.
+        self.assertEqual(rex_rows[0].icon, "■")
+        self.assertNotEqual(rex_rows[0].icon, tsesh.CURRENT_MARK)
         self.assertIn("dotfiles", ANSI.sub("", rex_rows[0].visible_text()))
 
     def test_sessions_hidden_without_a_rex_app(self):

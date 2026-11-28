@@ -28,7 +28,7 @@ set -g @tsesh_key_last ''
 | `ctrl-s` | Sessions view: pinned and live sessions |
 | `ctrl-g` | Agents view; again in the agents view: show or hide crew agents |
 | `ctrl-f` | Find view: directory scan under `$HOME` |
-| `ctrl-x` | Kill the highlighted session (session rows only; refuses the session you are in) |
+| `ctrl-x` | Kill the highlighted session (tmux or Rex session rows; refuses the tmux session you are in); on a crashed agent, dismiss the crash |
 | `ctrl-/` | Show or hide the preview |
 | `tab` / `shift-tab` | Down / up |
 | `enter` | Switch to the row, creating the session first if needed, or jump to the agent |

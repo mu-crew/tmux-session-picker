@@ -9,7 +9,8 @@ windows sit in N other directories. A zoxide or scan directory that a live
 session is rooted at, or has a window in, is not listed again: that session's
 row stands for it. The preview of a live session lists every window (active
 marker, index, agent state, name, pane count, directory) above the active
-pane's contents.
+pane's contents. Rex sessions get rows of their own (`■`), described in
+[rex.md](rex.md).
 
 ## Session reuse by path and name collisions
 
