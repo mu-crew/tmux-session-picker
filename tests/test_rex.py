@@ -25,8 +25,12 @@ if "ls" in args:
         {{"session_id": "session:r1", "label": "dotfiles"}},
         {{"session_id": "session:r2", "label": "murmur"}},
     ]}}))
+elif "new" in args and "window" in args:
+    print(json.dumps({{"window_id": "window:newtab", "block_ids": ["block:newb"]}}))
 elif "new" in args and "window" not in args:
     print(json.dumps({{"session_id": "session:created"}}))
+elif "whoami" in args:
+    print(json.dumps({{"session_id": "session:here"}}))
 elif "inspect" in args:
     print(json.dumps({{
         "session_id": "session:r1",
@@ -109,13 +113,22 @@ class RexIntegration(unittest.TestCase):
                     "new",
                     "-s",
                     "block:here",
+                    "--json",
                     "work",
                     "--",
                     "tmux",
                     "attach-session",
                     "-t",
                     "=work",
-                ]
+                ],
+                ["--autostart=false", "--timeout", "1s", "whoami", "--json"],
+                [
+                    "--autostart=false",
+                    "do",
+                    "session.select",
+                    "session_id=session:here",
+                    "window_id=window:newtab",
+                ],
             ],
         )
 

@@ -1195,7 +1195,35 @@ def rex_sessions() -> list[tuple[str, str]]:
     return out
 
 
-def rex_select_session(session_id: str) -> int:
+def rex_current_session_id() -> str:
+    """Resolve the current Rex session ID (session:...) for session.select."""
+    if (sid := os.environ.get("REX_SESSION")) and sid.startswith("session:"):
+        return sid
+    exe = rex_command()
+    if exe is None:
+        return ""
+    try:
+        proc = subprocess.run(
+            [exe, "--autostart=false", "--timeout", "1s", "whoami", "--json"],
+            env=rex_local_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    try:
+        sid = clean_field(json.loads(proc.stdout).get("session_id"))
+    except (ValueError, AttributeError):
+        return ""
+    return sid if sid.startswith("session:") else ""
+
+
+def rex_select_session(session_id: str, window_id: str = "") -> int:
     exe = rex_command()
     if exe is None:
         report_failure("rex is not installed")
@@ -1208,6 +1236,7 @@ def rex_select_session(session_id: str) -> int:
         "do",
         "session.select",
         f"session_id={session_id}",
+        *(["window_id=" + window_id] if window_id.startswith("window:") else []),
     ]
     proc = subprocess.run(argv, env=rex_local_env(), check=False)
     if proc.returncode != 0:
@@ -1218,7 +1247,7 @@ def rex_select_session(session_id: str) -> int:
 
 
 def rex_open_tmux_tab(label: str, target: str) -> int:
-    """Open a new Rex tab attached to tmux TARGET (so a floating picker closes cleanly)."""
+    """Open a new Rex tab attached to tmux TARGET and switch Rex.app to it."""
     exe = rex_command()
     if exe is None:
         report_failure("rex is not installed")
@@ -1231,6 +1260,7 @@ def rex_open_tmux_tab(label: str, target: str) -> int:
         "window",
         "new",
         *(["-s", tgt] if tgt else []),
+        "--json",
         safe_label,
         "--",
         "tmux",
@@ -1239,10 +1269,23 @@ def rex_open_tmux_tab(label: str, target: str) -> int:
         "-t",
         target,
     ]
-    proc = subprocess.run(argv, env=rex_local_env(), check=False)
+    proc = subprocess.run(
+        argv,
+        env=rex_local_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if proc.returncode != 0:
         report_failure(f"rex window new failed (exit {proc.returncode})")
         return 1
+    wid = ""
+    try:
+        wid = clean_field(json.loads(proc.stdout).get("window_id"))
+    except (ValueError, AttributeError):
+        wid = ""
+    if sid := rex_current_session_id():
+        rex_select_session(sid, wid)
     return 0
 
 
