@@ -33,8 +33,6 @@ elif "new" in args and "window" not in args:
         "session_id": "session:created",
         "initial_windows": [{{"window_id": "window:w0", "block_ids": ["block:b0"]}}],
     }}))
-elif "whoami" in args:
-    print(json.dumps({{"session_id": "session:here"}}))
 elif "inspect" in args:
     print(json.dumps({{
         "session_id": "session:r1",
@@ -170,12 +168,12 @@ class RexIntegration(unittest.TestCase):
                     "-t",
                     "=work",
                 ],
-                ["--autostart=false", "--timeout", "1s", "whoami", "--json"],
+                ["--autostart=false", "--timeout", "1s", "session", "inspect", "block:here", "--json"],
                 [
                     "--autostart=false",
                     "do",
                     "session.select",
-                    "session_id=session:here",
+                    "session_id=session:r1",
                     "window_id=window:newtab",
                 ],
             ],

@@ -17,7 +17,7 @@ import tempfile
 import time
 import tomllib
 import unicodedata
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from dataclasses import astuple, dataclass
 from functools import cache
 from pathlib import Path
@@ -1159,262 +1159,205 @@ def raise_rex_app() -> None:
         )
 
 
+def rex_call(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str] | None:
+    """Run ``rex --autostart=false ARGS`` against this machine's server,
+    output captured; None when rex is missing, cannot start, or times out."""
+    exe = rex_command()
+    if exe is None:
+        return None
+    try:
+        return subprocess.run(
+            [exe, "--autostart=false", *args],
+            env=rex_local_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def json_object(text: str) -> dict:
+    """TEXT as a JSON object, or {} for anything else."""
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def rex_json(*args: str, timeout: float | None = 2) -> dict:
+    """``rex_call`` read as a JSON object, {} on any failure."""
+    proc = rex_call(*args, timeout=timeout)
+    return json_object(proc.stdout) if proc is not None and proc.returncode == 0 else {}
+
+
+def rex_report(proc: subprocess.CompletedProcess[str] | None, what: str) -> int:
+    """Report a failed rex call (PROC None or nonzero); returns 1."""
+    if proc is None:
+        why = "rex is not installed" if rex_command() is None else "could not run rex"
+    else:
+        lines = proc.stderr.strip().splitlines()
+        why = lines[0] if lines else f"exit {proc.returncode}"
+    report_failure(f"{what}: {why}")
+    return 1
+
+
 def rex_sessions() -> list[tuple[str, str]]:
     """Live local Rex sessions as (session_id, label), or [] if unavailable."""
-    exe = rex_command()
-    if exe is None:
-        return []
-    try:
-        proc = subprocess.run(
-            [exe, "--autostart=false", "--timeout", "1s", "ls", "--json"],
-            env=rex_local_env(),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if proc.returncode != 0:
-        return []
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError:
-        return []
-    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
-        return []
-    out: list[tuple[str, str]] = []
-    for item in data["sessions"]:
-        if not isinstance(item, dict):
-            continue
-        sid = clean_field(item.get("session_id"))
-        label = clean_field(item.get("label")) or sid
-        if sid:
-            out.append((sid, label))
-    return out
+    items = rex_json("--timeout", "1s", "ls", "--json").get("sessions")
+    return [
+        (sid, clean_field(item.get("label")) or sid)
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict) and (sid := clean_field(item.get("session_id")))
+    ]
 
 
-def rex_current_session_id() -> str:
-    """Resolve the current Rex session ID (session:...) for session.select."""
-    if (sid := os.environ.get("REX_SESSION")) and sid.startswith("session:"):
-        return sid
-    exe = rex_command()
-    if exe is None:
-        return ""
-    try:
-        proc = subprocess.run(
-            [exe, "--autostart=false", "--timeout", "1s", "whoami", "--json"],
-            env=rex_local_env(),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if proc.returncode != 0:
-        return ""
-    try:
-        sid = clean_field(json.loads(proc.stdout).get("session_id"))
-    except (ValueError, AttributeError):
-        return ""
-    return sid if sid.startswith("session:") else ""
+def rex_session_info(target: str) -> dict:
+    """``rex session inspect`` of the session holding TARGET (a session or
+    block id), or {}."""
+    if not target:
+        return {}
+    return rex_json("--timeout", "1s", "session", "inspect", target, "--json")
+
+
+def rex_session_windows(target: str) -> tuple[str, list[str]]:
+    """(session_id, window ids in order) of the Rex session holding TARGET,
+    or ("", []) when Rex cannot say."""
+    info = rex_session_info(target)
+    windows = info.get("windows")
+    ids = [
+        w["window_id"]
+        for w in (windows if isinstance(windows, list) else [])
+        if isinstance(w, dict) and isinstance(w.get("window_id"), str)
+    ]
+    return clean_field(info.get("session_id")), ids
 
 
 def rex_select_session(session_id: str, window_id: str = "") -> int:
-    exe = rex_command()
-    if exe is None:
-        report_failure("rex is not installed")
-        return 1
+    """Show SESSION_ID (and WINDOW_ID) in Rex.app, then raise it."""
     client = os.environ.get("REX_CLIENT")
-    argv = [
-        exe,
-        "--autostart=false",
+    proc = rex_call(
         *(["-C", client] if client else []),
         "do",
         "session.select",
         f"session_id={session_id}",
-        *(["window_id=" + window_id] if window_id.startswith("window:") else []),
-    ]
-    proc = subprocess.run(argv, env=rex_local_env(), check=False)
-    if proc.returncode != 0:
-        report_failure(f"rex session.select {session_id} failed (exit {proc.returncode})")
-        return 1
+        *([f"window_id={window_id}"] if window_id.startswith("window:") else []),
+    )
+    if proc is None or proc.returncode != 0:
+        return rex_report(proc, f"rex session.select {session_id}")
     raise_rex_app()
     return 0
 
 
 def rex_open_tmux_tab(label: str, target: str) -> int:
     """Open a new Rex tab attached to tmux TARGET and switch Rex.app to it."""
-    exe = rex_command()
-    if exe is None:
-        report_failure("rex is not installed")
-        return 1
-    tgt = rex_target()
-    safe_label = label.lstrip("-") or "tmux"
-    argv = [
-        exe,
-        "--autostart=false",
+    here = rex_target()
+    proc = rex_call(
         "window",
         "new",
-        *(["-s", tgt] if tgt else []),
+        *(["-s", here] if here else []),
         "--json",
-        safe_label,
+        label.lstrip("-") or "tmux",
         "--",
         "tmux",
         *tmux_socket_args(),
         "attach-session",
         "-t",
         target,
-    ]
-    proc = subprocess.run(
-        argv,
-        env=rex_local_env(),
-        capture_output=True,
-        text=True,
-        check=False,
     )
-    if proc.returncode != 0:
-        report_failure(f"rex window new failed (exit {proc.returncode})")
-        return 1
-    wid = ""
-    try:
-        wid = clean_field(json.loads(proc.stdout).get("window_id"))
-    except (ValueError, AttributeError):
-        wid = ""
-    if sid := rex_current_session_id():
-        rex_select_session(sid, wid)
+    if proc is None or proc.returncode != 0:
+        return rex_report(proc, "rex window new")
+    session_id = rex_session_windows(here)[0]
+    if session_id:
+        rex_select_session(session_id, clean_field(json_object(proc.stdout).get("window_id")))
     return 0
 
 
 def rex_create_and_select(
     name: str, path: str, startup: str | None = None, split: str = ""
 ) -> int:
-    """Create a named Rex session rooted at PATH, apply optional SPLIT, and select it."""
-    exe = rex_command()
-    if exe is None:
-        report_failure("rex is not installed")
-        return 1
-    safe_name = name.lstrip("-") or "session"
+    """Create a named Rex session rooted at PATH, run STARTUP in its shell,
+    apply SPLIT as tmux would, and select it."""
     real_path = os.path.realpath(path)
-    argv = [
-        exe,
-        "--autostart=false",
-        "new",
-        safe_name,
-        "-c",
-        real_path,
-        "--json",
-    ]
-    proc = subprocess.run(
-        argv,
-        env=rex_local_env(),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        report_failure(f"rex new {safe_name} failed (exit {proc.returncode})")
-        return 1
-    sid = ""
-    wid = ""
-    bid = ""
-    try:
-        data = json.loads(proc.stdout)
-        if isinstance(data, dict):
-            sid = clean_field(data.get("session_id"))
-            wins = data.get("initial_windows")
-            if isinstance(wins, list) and wins and isinstance(wins[0], dict):
-                wid = clean_field(wins[0].get("window_id"))
-                blocks = wins[0].get("block_ids")
-                if isinstance(blocks, list) and blocks:
-                    bid = clean_field(blocks[0])
-    except (ValueError, AttributeError):
-        pass
-    if startup and bid:
-        subprocess.run(
-            [exe, "--autostart=false", "send", "-b", bid, "--", f"{startup}\r"],
-            env=rex_local_env(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    if split in ("vertical", "horizontal") and bid:
+    safe_name = name.lstrip("-") or "session"
+    proc = rex_call("new", safe_name, "-c", real_path, "--json")
+    if proc is None or proc.returncode != 0:
+        return rex_report(proc, f"rex new {safe_name}")
+    data = json_object(proc.stdout)
+    windows = data.get("initial_windows")
+    first = windows[0] if isinstance(windows, list) and windows and isinstance(windows[0], dict) else {}
+    blocks = first.get("block_ids")
+    block = clean_field(blocks[0]) if isinstance(blocks, list) and blocks else ""
+    if startup and block:
+        # Typed into the interactive shell, as tmux's send-keys: the pane
+        # outlives the program.
+        rex_call("send", "-b", block, "--", f"{startup}\r")
+    if split in ("vertical", "horizontal") and block:
         direction = "right" if split == "vertical" else "below"
-        subprocess.run(
-            [
-                exe,
-                "--autostart=false",
-                "split",
-                "-b",
-                bid,
-                f"--split={direction}",
-                "-c",
-                real_path,
-            ],
-            env=rex_local_env(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    return rex_select_session(sid, wid) if sid else 0
+        rex_call("split", "-b", block, f"--split={direction}", "-c", real_path)
+    session_id = clean_field(data.get("session_id"))
+    if not session_id:
+        return 0
+    return rex_select_session(session_id, clean_field(first.get("window_id")))
 
 
 def rex_session_preview(session_id: str) -> bool:
-    exe = rex_command()
-    if exe is None or not session_id:
+    info = rex_session_info(session_id)
+    if not info:
         return False
-    try:
-        proc = subprocess.run(
-            [exe, "--autostart=false", "--timeout", "1s", "session", "inspect", session_id, "--json"],
-            env=rex_local_env(),
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if proc.returncode != 0:
-        return False
-    try:
-        info = json.loads(proc.stdout)
-    except ValueError:
-        return False
-    label = clean_field(info.get("label")) or session_id
-    windows = info.get("windows") if isinstance(info.get("windows"), list) else []
-    active_wid = info.get("active_window_id")
-    focused_block = ""
-    print(f"rex session: {label}")
-    for win in windows:
+    windows = info.get("windows")
+    active = info.get("active_window_id")
+    focused = ""
+    print(f"rex session: {clean_field(info.get('label')) or session_id}")
+    for win in windows if isinstance(windows, list) else []:
         if not isinstance(win, dict):
             continue
         wid = win.get("window_id")
-        wlabel = clean_field(win.get("label")) or str(wid or "")
-        mark = "*" if wid == active_wid else " "
-        print(f" {mark} {wlabel}")
-        if wid == active_wid and isinstance(win.get("focused_block_id"), str):
-            focused_block = win["focused_block_id"]
-    if focused_block:
-        try:
-            cap = subprocess.run(
-                [exe, "--autostart=false", "--timeout", "1s", "capture", "-b", focused_block, "--trim"],
-                env=rex_local_env(),
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False,
-            )
-            if cap.returncode == 0 and cap.stdout.strip():
-                print()
-                print(cap.stdout.rstrip())
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        mark = "*" if wid == active else " "
+        print(f" {mark} {clean_field(win.get('label')) or str(wid or '')}")
+        if wid == active and isinstance(win.get("focused_block_id"), str):
+            focused = win["focused_block_id"]
+    if focused:
+        cap = rex_call("--timeout", "1s", "capture", "-b", focused, "--trim", timeout=2)
+        if cap is not None and cap.returncode == 0 and cap.stdout.strip():
+            print()
+            print(cap.stdout.rstrip())
     return True
+
+
+# Compatibility with murmur releases that predate its Rex fixes. Delete both
+# once tsesh can require a murmur whose `jump` handles Rex itself.
+
+
+def murmur_jump_env(env: Mapping[str, str] = os.environ) -> dict[str, str]:
+    """The environment for ``murmur jump``. murmur 3.1.0 detects a Rex pane
+    only by $REX_SESSION, which Rex no longer sets; without it a jump
+    attaches tmux inside this (floating) pane. $REX_BLOCK stands in: ``rex
+    -s`` accepts a block ID. (murmur 3.1.1 reads $REX_BLOCK itself.)"""
+    out = dict(env)
+    if in_rex(env) and not out.get("REX_SESSION") and out.get("REX_BLOCK"):
+        out["REX_SESSION"] = out["REX_BLOCK"]
+    return out
+
+
+def murmur_jump_in_rex(run: Callable[[], int]) -> int:
+    """RUN a ``murmur jump``, then select the tab it opened. murmur 3.1.1
+    and older open a tmux agent in a new Rex tab without selecting it, so a
+    closing floating picker leaves Rex.app on the old window. A Rex agent
+    adds no window: murmur selects it itself."""
+    if not in_rex():
+        return run()
+    before = rex_session_windows(rex_target())[1]
+    code = run()
+    if code == 0:
+        session_id, after = rex_session_windows(rex_target())
+        new = [w for w in after if w not in before]
+        if session_id and new:
+            rex_select_session(session_id, new[-1])
+    return code
 
 
 def _reject_constant(name: str) -> object:
@@ -2808,47 +2751,6 @@ def proven_here(here: str, socket: str) -> bool:
     return bool(here and socket and own_socket() == socket)
 
 
-def rex_session_windows(target: str) -> tuple[str, list[str]]:
-    """(session_id, window ids in order) of the Rex session holding TARGET
-    (a session or block id), or ("", []) when Rex cannot say."""
-    exe = rex_command()
-    if exe is None or not target:
-        return "", []
-    try:
-        proc = subprocess.run(
-            [exe, "--autostart=false", "--timeout", "1s", "session", "inspect", target, "--json"],
-            env=rex_local_env(),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        info = json.loads(proc.stdout) if proc.returncode == 0 else None
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return "", []
-    if not isinstance(info, dict):
-        return "", []
-    windows = info.get("windows") if isinstance(info.get("windows"), list) else []
-    ids = [
-        w["window_id"]
-        for w in windows
-        if isinstance(w, dict) and isinstance(w.get("window_id"), str)
-    ]
-    return clean_field(info.get("session_id")), ids
-
-
-def murmur_jump_env(env: Mapping[str, str] = os.environ) -> dict[str, str]:
-    """The environment for ``murmur jump``. In Rex, murmur 3.1.0 and older
-    detect a Rex pane only by $REX_SESSION, which Rex no longer sets; without
-    it the jump attaches tmux inside this (floating) pane instead of opening
-    a Rex tab. $REX_BLOCK stands in: ``rex -s`` accepts a block ID."""
-    out = dict(env)
-    if in_rex(env) and not out.get("REX_SESSION") and out.get("REX_BLOCK"):
-        out["REX_SESSION"] = out["REX_BLOCK"]
-    return out
-
-
 def connect_agent(payload: EntryPayload) -> int:
     """Take the user to an agent's pane.
 
@@ -2873,23 +2775,15 @@ def connect_agent(payload: EntryPayload) -> int:
     if exe is None or not payload.jump_target:
         print("agent: murmur is needed to reach this agent", file=sys.stderr)
         return 1
-    # In Rex a tmux jump opens a new tab and returns; murmur 3.1.0 does not
-    # select it, and closing a floating picker would leave Rex.app on the old
-    # window. Note the windows first, then go to whichever one the jump made.
-    rex = in_rex()
-    before = rex_session_windows(rex_target())[1] if rex else []
     # stdio stays inherited: jump may need the tty (ssh, a hardware-key tap).
-    code = subprocess.run(
-        [exe, "jump", payload.jump_target], env=murmur_jump_env(), check=False
-    ).returncode
+    code = murmur_jump_in_rex(
+        lambda: subprocess.run(
+            [exe, "jump", payload.jump_target], env=murmur_jump_env(), check=False
+        ).returncode
+    )
     if code != 0:
         report_failure(f"murmur jump {payload.jump_target} failed (exit {code})")
         return 1
-    if rex:
-        session_id, after = rex_session_windows(rex_target())
-        new = [w for w in after if w not in before]
-        if session_id and new:
-            rex_select_session(session_id, new[-1])
     return 0
 
 
@@ -3266,17 +3160,7 @@ def kill(kind: str, session_id: str, client: str = "", jump_target: str = "") ->
     if kind == "agent":
         return clear_agent(jump_target)
     if kind == "rex" and session_id.startswith("session:"):
-        exe = rex_command()
-        if exe:
-            with contextlib.suppress(OSError):
-                subprocess.run(
-                    [exe, "--autostart=false", "kill", session_id],
-                    env=rex_local_env(),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
+        rex_call("kill", session_id)
         return 0
     if kind not in ("default", "tmux") or not re.fullmatch(r"\$[0-9]+", session_id):
         return 0
