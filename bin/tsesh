@@ -359,6 +359,7 @@ LAST_FILE = STATE_DIR / "last"
 KIND_ICON = {
     "default": "★",
     "tmux": "●",
+    "rex": "◆",
     "zoxide": "◦",
     "find": "·",
     "agent": "◈",
@@ -391,6 +392,7 @@ STATE_STYLE: dict[AgentState | None, tuple[str, bool]] = {
 KIND_FG: dict[str, str] = {
     "default": CATPPUCCIN["lavender"],
     "tmux": CATPPUCCIN["sky"],
+    "rex": CATPPUCCIN["teal"],
     "zoxide": CATPPUCCIN["sapphire"],
     "find": CATPPUCCIN["subtext0"],
     "agent": CATPPUCCIN["lavender"],
@@ -646,6 +648,7 @@ class EntryPayload:
     jump_target: str = ""
     here: str = ""
     socket: str = ""
+    session_id: str = ""
 
     @classmethod
     def from_fzf_row(cls, row: str) -> EntryPayload:
@@ -661,6 +664,7 @@ class EntryPayload:
             jump_target=fields["jump_target"],
             here=fields["here"],
             socket=fields["socket"],
+            session_id=fields["session_id"],
         )
 
 
@@ -1107,6 +1111,227 @@ def build_path_entries(
 
 def murmur_command() -> str | None:
     return shutil.which(os.environ.get("TSESH_MURMUR", "murmur"))
+
+
+def rex_command() -> str | None:
+    cmd = os.environ.get("TSESH_REX", "rex")
+    return shutil.which(cmd) if cmd else None
+
+
+def in_rex(env: Mapping[str, str] = os.environ) -> bool:
+    """True when running in a Rex pane (and not inside tmux)."""
+    return (
+        not env.get("TMUX")
+        and env.get("TERM_PROGRAM") == "rex"
+        and bool(env.get("REX_BLOCK") or env.get("REX_SESSION"))
+    )
+
+
+def rex_target(env: Mapping[str, str] = os.environ) -> str:
+    return env.get("REX_SESSION") or env.get("REX_BLOCK") or ""
+
+
+def rex_local_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("REX_SERVER", None)
+    return env
+
+
+RAISE_REX_JXA = (
+    'ObjC.import("AppKit"); '
+    'const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.superlogical.rex"); '
+    "if (a.count > 0) a.objectAtIndex(0).activateWithOptions("
+    "$.NSApplicationActivateAllWindows | $.NSApplicationActivateIgnoringOtherApps);"
+)
+
+
+def raise_rex_app() -> None:
+    """Best-effort raise of Rex.app on macOS when jumping from outside Rex."""
+    if sys.platform != "darwin" or os.environ.get("TERM_PROGRAM") == "rex":
+        return
+    with contextlib.suppress(OSError):
+        subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", RAISE_REX_JXA],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+
+def rex_sessions() -> list[tuple[str, str]]:
+    """Live local Rex sessions as (session_id, label), or [] if unavailable."""
+    exe = rex_command()
+    if exe is None:
+        return []
+    try:
+        proc = subprocess.run(
+            [exe, "--autostart=false", "--timeout", "1s", "ls", "--json"],
+            env=rex_local_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
+        return []
+    out: list[tuple[str, str]] = []
+    for item in data["sessions"]:
+        if not isinstance(item, dict):
+            continue
+        sid = clean_field(item.get("session_id"))
+        label = clean_field(item.get("label")) or sid
+        if sid:
+            out.append((sid, label))
+    return out
+
+
+def rex_select_session(session_id: str) -> int:
+    exe = rex_command()
+    if exe is None:
+        report_failure("rex is not installed")
+        return 1
+    client = os.environ.get("REX_CLIENT")
+    argv = [
+        exe,
+        "--autostart=false",
+        *(["-C", client] if client else []),
+        "do",
+        "session.select",
+        f"session_id={session_id}",
+    ]
+    proc = subprocess.run(argv, env=rex_local_env(), check=False)
+    if proc.returncode != 0:
+        report_failure(f"rex session.select {session_id} failed (exit {proc.returncode})")
+        return 1
+    raise_rex_app()
+    return 0
+
+
+def rex_open_tmux_tab(label: str, target: str) -> int:
+    """Open a new Rex tab attached to tmux TARGET (so a floating picker closes cleanly)."""
+    exe = rex_command()
+    if exe is None:
+        report_failure("rex is not installed")
+        return 1
+    tgt = rex_target()
+    safe_label = label.lstrip("-") or "tmux"
+    argv = [
+        exe,
+        "--autostart=false",
+        "window",
+        "new",
+        *(["-s", tgt] if tgt else []),
+        safe_label,
+        "--",
+        "tmux",
+        *tmux_socket_args(),
+        "attach-session",
+        "-t",
+        target,
+    ]
+    proc = subprocess.run(argv, env=rex_local_env(), check=False)
+    if proc.returncode != 0:
+        report_failure(f"rex window new failed (exit {proc.returncode})")
+        return 1
+    return 0
+
+
+def rex_create_and_select(name: str, path: str, startup: str | None = None) -> int:
+    """Create a named Rex session rooted at PATH and select it in Rex.app."""
+    exe = rex_command()
+    if exe is None:
+        report_failure("rex is not installed")
+        return 1
+    safe_name = name.lstrip("-") or "session"
+    argv = [
+        exe,
+        "--autostart=false",
+        "new",
+        safe_name,
+        "-c",
+        os.path.realpath(path),
+        "--json",
+    ]
+    if startup:
+        argv += ["--", "sh", "-lc", startup]
+    proc = subprocess.run(
+        argv,
+        env=rex_local_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        report_failure(f"rex new {safe_name} failed (exit {proc.returncode})")
+        return 1
+    try:
+        sid = clean_field(json.loads(proc.stdout).get("session_id"))
+    except (ValueError, AttributeError):
+        sid = ""
+    return rex_select_session(sid) if sid else 0
+
+
+def rex_session_preview(session_id: str) -> bool:
+    exe = rex_command()
+    if exe is None or not session_id:
+        return False
+    try:
+        proc = subprocess.run(
+            [exe, "--autostart=false", "--timeout", "1s", "session", "inspect", session_id, "--json"],
+            env=rex_local_env(),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        info = json.loads(proc.stdout)
+    except ValueError:
+        return False
+    label = clean_field(info.get("label")) or session_id
+    windows = info.get("windows") if isinstance(info.get("windows"), list) else []
+    active_wid = info.get("active_window_id")
+    focused_block = ""
+    print(f"rex session: {label}")
+    for win in windows:
+        if not isinstance(win, dict):
+            continue
+        wid = win.get("window_id")
+        wlabel = clean_field(win.get("label")) or str(wid or "")
+        mark = "*" if wid == active_wid else " "
+        print(f" {mark} {wlabel}")
+        if wid == active_wid and isinstance(win.get("focused_block_id"), str):
+            focused_block = win["focused_block_id"]
+    if focused_block:
+        try:
+            cap = subprocess.run(
+                [exe, "--autostart=false", "--timeout", "1s", "capture", "-b", focused_block, "--trim"],
+                env=rex_local_env(),
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if cap.returncode == 0 and cap.stdout.strip():
+                print()
+                print(cap.stdout.rstrip())
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return True
 
 
 def _reject_constant(name: str) -> object:
@@ -1813,6 +2038,35 @@ def build_view(
                     **where(session_name),
                 )
             )
+        rex_counts: dict[str, dict[AgentState, int]] = {}
+        if snapshot is not None:
+            for pane in snapshot.panes:
+                srv = pane.get("server")
+                if (
+                    pane.get("local")
+                    and isinstance(srv, dict)
+                    and srv.get("kind") == "rex"
+                    and isinstance(pane.get("session"), str)
+                ):
+                    st = pane_state(pane)
+                    per = rex_counts.setdefault(pane["session"], {})
+                    per[st] = per.get(st, 0) + 1
+        for sid, label in rex_sessions():
+            per = rex_counts.get(sid, {})
+            active = [st for st in per if st is not AgentState.idle]
+            worst = max(active, key=merge_rank) if active else None
+            entries.append(
+                Entry(
+                    kind="rex",
+                    name=label,
+                    session_name=label,
+                    worst_state=worst,
+                    is_running=True,
+                    agent_counts=tuple(sorted(per.items(), key=lambda item: -item[0])),
+                    counts="rex",
+                    session_id=sid,
+                )
+            )
 
     if mode == "all":
         entries.extend(
@@ -1927,6 +2181,7 @@ def preview(
     pane: str = "",
     here: str = "",
     socket: str = "",
+    session_id: str = "",
 ) -> int:
     if kind == "agent":
         if proven_here(here, socket) and pane:
@@ -1938,6 +2193,8 @@ def preview(
                 print(capture.stdout.rstrip())
                 return 0
         print(f"host: {host or '(unknown)'}\nsession: {session_name or '(unknown)'}")
+        return 0
+    if kind == "rex" and rex_session_preview(session_id):
         return 0
     live = kind in {"tmux", "default"} and session_name
     if live and tmux_session_preview(session_name):
@@ -2276,7 +2533,7 @@ def _fzf_command(
         "--bind",
         f"resize:transform:{self_cmd} fzf-action current",
         "--preview",
-        f"{self_cmd} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}} --socket {{11}}",
+        f"{self_cmd} preview --kind {{2}} --session-name {{3}} --path {{4}} --split {{6}} --host {{7}} --pane {{8}} --here {{10}} --socket {{11}} --session-id {{12}}",
     ]
     if load_config().fzf_exact:
         # Substring (literal) matching only. Prefix a token with `'` to opt
@@ -2451,6 +2708,8 @@ def pick_and_connect(mode: str = "all", query: str = "", client: str = "") -> in
         payload = found
     if payload.kind == "agent":
         return connect_agent(payload)
+    if payload.kind == "rex" and payload.session_id:
+        return rex_select_session(payload.session_id)
     return connect_resolved(
         payload.session_name,
         payload.path,
@@ -2626,6 +2885,8 @@ class TmuxBackend:
             # current (a popup has no pane of its own).
             client = ["-c", INVOKING_CLIENT] if INVOKING_CLIENT else []
             tmux_cmd("switch-client", *client, "-t", target, capture=False)
+        elif in_rex():
+            rex_open_tmux_tab(name, target)
         else:
             tmux_cmd("attach-session", "-t", target, capture=False)
         update_last(name)
@@ -2717,6 +2978,15 @@ def connect_resolved(
     session's own name): it may collide with another directory's session, so
     it gets a suffix then.
     """
+    if in_rex() and path is not None:
+        for sid, label in rex_sessions():
+            if label == session_name:
+                return rex_select_session(sid)
+        if backend().exists(session_name):
+            backend().switch(session_name)
+            return 0
+        return rex_create_and_select(session_name, path, startup)
+
     if derived_name and path:
         if live := live_session_for_path(path):
             backend().switch(live.name, target=live.id)
@@ -2859,6 +3129,19 @@ def kill(kind: str, session_id: str, client: str = "", jump_target: str = "") ->
     """
     if kind == "agent":
         return clear_agent(jump_target)
+    if kind == "rex" and session_id.startswith("session:"):
+        exe = rex_command()
+        if exe:
+            with contextlib.suppress(OSError):
+                subprocess.run(
+                    [exe, "--autostart=false", "kill", session_id],
+                    env=rex_local_env(),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+        return 0
     if kind not in ("default", "tmux") or not re.fullmatch(r"\$[0-9]+", session_id):
         return 0
     mark_switched()  # its reload follows; the handover must not undo it
@@ -3084,6 +3367,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         p_preview.add_argument("--pane", default="")
         p_preview.add_argument("--here", default="")
         p_preview.add_argument("--socket", default="")
+        p_preview.add_argument("--session-id", default="")
 
         args = parser.parse_args(list(argv) if argv is not None else None)
         pin_own_server()
@@ -3129,6 +3413,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                         args.pane,
                         args.here,
                         args.socket,
+                        args.session_id,
                     ),
                 )
             )

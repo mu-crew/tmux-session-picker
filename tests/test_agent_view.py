@@ -62,6 +62,7 @@ class Harness(unittest.TestCase):
             "XDG_STATE_HOME": str(self.tmp / "state"),
             "_ZO_DATA_DIR": str(self.tmp / "zoxide"),
             "TSESH_MURMUR": str(self.murmur),
+            "TSESH_REX": "",
             "FAKE_MURMUR_LOG": str(self.tmp / "murmur.log"),
             "FAKE_MURMUR_JSON": str(self.tmp / "status.json"),
             "FZF_SHIM_LOG": str(self.tmp / "fzf.log"),

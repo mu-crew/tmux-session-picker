@@ -47,10 +47,11 @@ WAIT = 60.0
 RUN_DIR = tempfile.mkdtemp(prefix="ts", dir="/tmp")
 tempfile.tempdir = RUN_DIR
 os.environ["TMUX_TMPDIR"] = RUN_DIR
-# Never the tmux server the suite happens to run in: a test that wants $TMUX
-# sets it to its own isolated server.
-for _var in ("TMUX", "TMUX_PANE"):
+# Never the tmux or Rex server the suite happens to run in: a test that wants
+# $TMUX or Rex sets it to its own isolated server/stub.
+for _var in ("TMUX", "TMUX_PANE", "REX_BLOCK", "REX_SESSION", "REX_SERVER", "REX_CLIENT", "TERM_PROGRAM"):
     os.environ.pop(_var, None)
+os.environ.setdefault("TSESH_REX", "")
 # The picker gives murmur 1 s by default; a fake murmur under load needs more.
 os.environ["TSESH_MURMUR_TIMEOUT"] = "30"
 
