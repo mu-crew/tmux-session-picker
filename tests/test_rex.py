@@ -21,7 +21,13 @@ import json, os, sys
 args = sys.argv[1:]
 with open({str(log_path)!r}, "a") as fh:
     fh.write(json.dumps(args) + "\\n")
-if "ls" in args:
+if "client" in args and "ls" in args:
+    kind = os.environ.get("FAKE_REX_CLIENT_KIND", "app")
+    print(json.dumps({{"clients": [
+        {{"client_id": "client:cli", "info": {{"kind": "cli"}}}},
+        {{"client_id": "client:01ab", "info": {{"kind": kind, "label": "mac"}}}},
+    ]}}))
+elif "ls" in args:
     print(json.dumps({{"sessions": [
         {{"session_id": "session:r1", "label": "dotfiles"}},
         {{"session_id": "session:r2", "label": "murmur"}},
@@ -48,6 +54,9 @@ elif "capture" in args:
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return script
+
+
+CLIENT_LS = ["--autostart=false", "--timeout", "1s", "client", "ls", "--json"]
 
 
 class RexIntegration(unittest.TestCase):
@@ -83,6 +92,24 @@ class RexIntegration(unittest.TestCase):
         self.assertEqual([e.session_id for e in rex_rows], ["session:r1", "session:r2"])
         self.assertEqual(rex_rows[0].counts, "rex")
         self.assertIn("dotfiles", ANSI.sub("", rex_rows[0].visible_text()))
+
+    def test_sessions_hidden_without_a_rex_app(self):
+        # A headless Rex server (Linux, no app): nothing could show them.
+        os.environ["FAKE_REX_CLIENT_KIND"] = "cli"
+        try:
+            entries = tsesh.build_entries("sessions", live={})
+        finally:
+            os.environ.pop("FAKE_REX_CLIENT_KIND", None)
+        self.assertEqual([e for e in entries if e.kind == "rex"], [])
+
+    def test_rex_client_must_match_when_named(self):
+        os.environ["REX_CLIENT"] = "ipad"
+        try:
+            self.assertFalse(tsesh.rex_has_app())
+            os.environ["REX_CLIENT"] = "mac"
+            self.assertTrue(tsesh.rex_has_app())
+        finally:
+            os.environ.pop("REX_CLIENT", None)
 
     def test_in_rex_detection_from_rex_block(self):
         self.assertTrue(tsesh.in_rex({"TERM_PROGRAM": "rex", "REX_BLOCK": "block:1"}))
@@ -188,13 +215,14 @@ class RexIntegration(unittest.TestCase):
         rc = tsesh.connect_resolved("newproj", str(project), None, "")
         self.assertEqual(rc, 0)
         calls = self.rex_calls()
+        self.assertEqual(calls[1], CLIENT_LS)
         self.assertEqual(calls[0], ["--autostart=false", "--timeout", "1s", "ls", "--json"])
         self.assertEqual(
-            calls[1],
+            calls[2],
             ["--autostart=false", "new", "newproj", "-c", os.path.realpath(project), "--json"],
         )
         self.assertEqual(
-            calls[2],
+            calls[3],
             [
                 "--autostart=false",
                 "do",
@@ -213,12 +241,13 @@ class RexIntegration(unittest.TestCase):
         rc = tsesh.connect_resolved("splitproj", str(project), "nvim", "vertical")
         self.assertEqual(rc, 0)
         calls = self.rex_calls()
+        self.assertEqual(calls[1], CLIENT_LS)
         self.assertEqual(
-            calls[2],
+            calls[3],
             ["--autostart=false", "send", "-b", "block:b0", "--", "nvim\r"],
         )
         self.assertEqual(
-            calls[3],
+            calls[4],
             [
                 "--autostart=false",
                 "split",
@@ -230,7 +259,7 @@ class RexIntegration(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            calls[4],
+            calls[5],
             [
                 "--autostart=false",
                 "do",
@@ -249,8 +278,9 @@ class RexIntegration(unittest.TestCase):
         rc = tsesh.connect_resolved("dotfiles", str(project), None, "")
         self.assertEqual(rc, 0)
         calls = self.rex_calls()
+        self.assertEqual(calls[1], CLIENT_LS)
         self.assertEqual(
-            calls[1],
+            calls[2],
             ["--autostart=false", "do", "session.select", "session_id=session:r1"],
         )
 

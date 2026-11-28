@@ -1205,14 +1205,32 @@ def rex_report(proc: subprocess.CompletedProcess[str] | None, what: str) -> int:
     return 1
 
 
+def rex_has_app() -> bool:
+    """Whether this machine's Rex server has a Rex.app to show a session in:
+    an ``app`` client (``rex client ls``), and with $REX_CLIENT set, that one
+    by label or ID. A headless server (Linux, no app yet) has only CLI ones."""
+    clients = rex_json("--timeout", "1s", "client", "ls", "--json").get("clients")
+    want = os.environ.get("REX_CLIENT")
+    for entry in clients if isinstance(clients, list) else []:
+        info = entry.get("info") if isinstance(entry, dict) else None
+        if not isinstance(info, dict) or info.get("kind") != "app":
+            continue
+        if not want or info.get("label") == want or str(entry.get("client_id", "")).endswith(want):
+            return True
+    return False
+
+
 def rex_sessions() -> list[tuple[str, str]]:
-    """Live local Rex sessions as (session_id, label), or [] if unavailable."""
+    """Live local Rex sessions as (session_id, label). [] when Rex is
+    unavailable, and when no Rex.app is connected: rex has no terminal attach,
+    so a session there is one no pick could show."""
     items = rex_json("--timeout", "1s", "ls", "--json").get("sessions")
-    return [
+    sessions = [
         (sid, clean_field(item.get("label")) or sid)
         for item in (items if isinstance(items, list) else [])
         if isinstance(item, dict) and (sid := clean_field(item.get("session_id")))
     ]
+    return sessions if sessions and rex_has_app() else []
 
 
 def rex_session_info(target: str) -> dict:
