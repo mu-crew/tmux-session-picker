@@ -28,7 +28,10 @@ if "ls" in args:
 elif "new" in args and "window" in args:
     print(json.dumps({{"window_id": "window:newtab", "block_ids": ["block:newb"]}}))
 elif "new" in args and "window" not in args:
-    print(json.dumps({{"session_id": "session:created"}}))
+    print(json.dumps({{
+        "session_id": "session:created",
+        "initial_windows": [{{"window_id": "window:w0", "block_ids": ["block:b0"]}}],
+    }}))
 elif "whoami" in args:
     print(json.dumps({{"session_id": "session:here"}}))
 elif "inspect" in args:
@@ -148,7 +151,45 @@ class RexIntegration(unittest.TestCase):
         )
         self.assertEqual(
             calls[2],
-            ["--autostart=false", "do", "session.select", "session_id=session:created"],
+            [
+                "--autostart=false",
+                "do",
+                "session.select",
+                "session_id=session:created",
+                "window_id=window:w0",
+            ],
+        )
+
+    def test_connect_resolved_in_rex_honors_split(self):
+        os.environ["TERM_PROGRAM"] = "rex"
+        os.environ["REX_BLOCK"] = "block:here"
+        os.environ.pop("TMUX", None)
+        project = self.tmp / "splitproj"
+        project.mkdir()
+        rc = tsesh.connect_resolved("splitproj", str(project), None, "vertical")
+        self.assertEqual(rc, 0)
+        calls = self.rex_calls()
+        self.assertEqual(
+            calls[2],
+            [
+                "--autostart=false",
+                "split",
+                "-b",
+                "block:b0",
+                "--split=right",
+                "-c",
+                os.path.realpath(project),
+            ],
+        )
+        self.assertEqual(
+            calls[3],
+            [
+                "--autostart=false",
+                "do",
+                "session.select",
+                "session_id=session:created",
+                "window_id=window:w0",
+            ],
         )
 
     def test_connect_resolved_in_rex_reuses_existing_rex_session(self):
