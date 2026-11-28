@@ -2808,6 +2808,17 @@ def proven_here(here: str, socket: str) -> bool:
     return bool(here and socket and own_socket() == socket)
 
 
+def murmur_jump_env(env: Mapping[str, str] = os.environ) -> dict[str, str]:
+    """The environment for ``murmur jump``. In Rex, murmur 3.1.0 and older
+    detect a Rex pane only by $REX_SESSION, which Rex no longer sets; without
+    it the jump attaches tmux inside this (floating) pane instead of opening
+    a Rex tab. $REX_BLOCK stands in: ``rex -s`` accepts a block ID."""
+    out = dict(env)
+    if in_rex(env) and not out.get("REX_SESSION") and out.get("REX_BLOCK"):
+        out["REX_SESSION"] = out["REX_BLOCK"]
+    return out
+
+
 def connect_agent(payload: EntryPayload) -> int:
     """Take the user to an agent's pane.
 
@@ -2833,7 +2844,9 @@ def connect_agent(payload: EntryPayload) -> int:
         print("agent: murmur is needed to reach this agent", file=sys.stderr)
         return 1
     # stdio stays inherited: jump may need the tty (ssh, a hardware-key tap).
-    code = subprocess.run([exe, "jump", payload.jump_target], check=False).returncode
+    code = subprocess.run(
+        [exe, "jump", payload.jump_target], env=murmur_jump_env(), check=False
+    ).returncode
     if code != 0:
         report_failure(f"murmur jump {payload.jump_target} failed (exit {code})")
         return 1

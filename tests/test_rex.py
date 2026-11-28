@@ -93,6 +93,21 @@ class RexIntegration(unittest.TestCase):
             tsesh.in_rex({"TMUX": "/tmp/s,1,0", "TERM_PROGRAM": "rex", "REX_BLOCK": "block:1"})
         )
 
+    def test_murmur_jump_env_backfills_rex_session_from_rex_block(self):
+        env = tsesh.murmur_jump_env({"TERM_PROGRAM": "rex", "REX_BLOCK": "block:1"})
+        self.assertEqual(env["REX_SESSION"], "block:1")
+        kept = tsesh.murmur_jump_env(
+            {"TERM_PROGRAM": "rex", "REX_BLOCK": "block:1", "REX_SESSION": "session:s"}
+        )
+        self.assertEqual(kept["REX_SESSION"], "session:s")
+        self.assertNotIn("REX_SESSION", tsesh.murmur_jump_env({"REX_BLOCK": "block:1"}))
+        self.assertNotIn(
+            "REX_SESSION",
+            tsesh.murmur_jump_env(
+                {"TMUX": "/tmp/s,1,0", "TERM_PROGRAM": "rex", "REX_BLOCK": "block:1"}
+            ),
+        )
+
     def test_select_rex_session(self):
         rc = tsesh.rex_select_session("session:r1")
         self.assertEqual(rc, 0)
